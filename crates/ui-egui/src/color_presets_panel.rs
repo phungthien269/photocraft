@@ -11,7 +11,12 @@
 //! panel key `color`. Every action is queued while the panel draws and applied afterwards, so no
 //! UI-state borrow is held across an engine command.
 
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+
 use egui::{Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, pos2, vec2};
+use photocraft_color::BlendMode;
+use photocraft_doc::{DocId, Document, Layer, LayerContent};
 use photocraft_engine::jobs::{JobId, Started};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -219,8 +224,22 @@ impl BasicHint {
 #[derive(Clone, Debug)]
 struct LibraryItem {
     name: String,
-    layers: usize,
+    /// The preset's layers exactly as `color.presets.list` returns them, bottom-to-top.
+    layers: Vec<Value>,
+    layer_count: usize,
+    /// A stable hash of `layers`, so the preview cache notices an edited preset without rehashing.
+    layers_hash: u64,
     hint: Option<BasicHint>,
+}
+
+/// A hash of the preset's layer JSON: the cache key's "what does this preset do" part.
+fn hash_layers(layers: &[Value]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    layers.len().hash(&mut hasher);
+    for layer in layers {
+        layer.to_string().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 #[derive(Clone, Debug)]
@@ -249,7 +268,7 @@ fn parse_library(value: &Value) -> Library {
                 .find(|layer| layer.get("kind").and_then(Value::as_str) == Some("basicColor"))
                 .and_then(|layer| layer.get("params"))
                 .map(BasicHint::from_params);
-            items.push(LibraryItem { name: name.to_string(), layers: layers.len(), hint });
+            items.push(LibraryItem { name: name.to_string(), layers: layers.to_vec(), layer_count: layers.len(), layers_hash: hash_layers(layers), hint });
         }
         library.total += items.len();
         library.groups.push(LibraryGroup { name: name.to_string(), items });
@@ -272,6 +291,126 @@ fn filter_library(library: &Library, needle: &str) -> Library {
         }
     }
     out
+}
+
+/// The longest side of a preset preview, in pixels.
+const PREVIEW_SIDE: u32 = 96;
+
+/// The most preview textures kept at once; a larger library renders the rest on demand.
+const MAX_PREVIEWS: usize = 256;
+
+fn preview_cache_id() -> egui::Id {
+    egui::Id::new("color-presets-previews")
+}
+
+/// One adjustment layer of a preset, rebuilt from its stored JSON. `None` for a kind this build
+/// cannot recreate; an unknown blend falls back to Normal, and opacity is clamped like `apply`.
+fn preview_layer(value: &Value, mode: photocraft_doc::ColorMode) -> Option<Layer> {
+    let kind = value.get("kind").and_then(Value::as_str).map(str::trim).filter(|k| !k.is_empty())?;
+    let params = value.get("params").unwrap_or(&Value::Null);
+    let adjustment = photocraft_engine::adjust_params::from_params(kind, params, None, mode).ok()?;
+    let opacity = match value.get("opacity") {
+        None | Some(Value::Null) => 1.0,
+        Some(v) => (v.as_f64().filter(|o| o.is_finite())? as f32).clamp(0.0, 1.0),
+    };
+    let blend = value
+        .get("blend")
+        .and_then(Value::as_str)
+        .and_then(photocraft_engine::commands::blend_from_str)
+        .filter(|b| *b != BlendMode::PassThrough)
+        .unwrap_or(BlendMode::Normal);
+    let name = match value.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => name.to_string(),
+        None => adjustment.label().to_string(),
+    };
+    let mut layer = Layer::new(name, LayerContent::Adjustment(adjustment));
+    layer.opacity = opacity;
+    layer.blend = blend;
+    Some(layer)
+}
+
+/// A shallow clone of `doc` with the preset's adjustment layers on top, bottom-to-top. The live
+/// document is never touched; `None` when no layer can be recreated, so the caller keeps its hint.
+fn preview_document(doc: &Document, item: &LibraryItem) -> Option<Document> {
+    let mut preview = doc.clone();
+    let before = preview.layers.len();
+    for value in &item.layers {
+        if let Some(layer) = preview_layer(value, doc.mode) {
+            preview.layers.push(layer);
+        }
+    }
+    (preview.layers.len() > before).then_some(preview)
+}
+
+/// The preset applied to a small render of the current image, at most `max_side` pixels on its
+/// longer side. `None` when no preset layer could be recreated (the card keeps its look wash).
+fn preview_image(doc: &Document, item: &LibraryItem, max_side: u32) -> Option<egui::ColorImage> {
+    let preview = preview_document(doc, item)?;
+    let b = preview.bounds();
+    let longest = b.width().max(b.height()).max(1);
+    let scale = (max_side.max(1) as f32 / longest as f32).min(1.0);
+    let w = ((b.width() as f32 * scale).round() as u32).max(1);
+    let h = ((b.height() as f32 * scale).round() as u32).max(1);
+    let image = photocraft_compose::render_reduced(&preview, w, h).to_rgba8();
+    Some(egui::ColorImage::from_rgba_unmultiplied([image.width as usize, image.height as usize], &image.pixels))
+}
+
+/// The identity of one cached preview: the document state, the preset and its layers, and the size.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PreviewKey {
+    document: DocId,
+    revision: u64,
+    name: String,
+    layers: u64,
+    side: u32,
+}
+
+/// One cached preview and the frame that last drew it, for the cache's least-recently-used trim.
+#[derive(Clone)]
+struct PreviewEntry {
+    texture: egui::TextureHandle,
+    used: u64,
+}
+
+/// Preview textures kept in egui's context data across frames. A new document or revision retires
+/// every old texture; the map is capped so a huge library cannot grow it without bound.
+#[derive(Clone, Default)]
+struct PreviewCache {
+    textures: HashMap<PreviewKey, PreviewEntry>,
+    seen: Option<(DocId, u64)>,
+    /// A use counter: every look-up and insertion gets its own stamp, so the trim has a strict order.
+    stamp: u64,
+}
+
+impl PreviewCache {
+    /// Drop every texture from another document state and trim the least recently used ones. Called
+    /// once per frame, before drawing, so no texture this frame's paint list refers to is freed.
+    fn begin(&mut self, current: Option<(DocId, u64)>) {
+        if self.seen != current {
+            self.textures.clear();
+            self.seen = current;
+        }
+        if self.textures.len() > MAX_PREVIEWS {
+            let mut used: Vec<u64> = self.textures.values().map(|entry| entry.used).collect();
+            used.sort_unstable_by(|a, b| b.cmp(a));
+            let cutoff = used.get(MAX_PREVIEWS - 1).copied().unwrap_or(0);
+            self.textures.retain(|_, entry| entry.used >= cutoff);
+        }
+    }
+
+    fn texture(&mut self, ctx: &egui::Context, doc: &Document, revision: u64, item: &LibraryItem) -> Option<egui::TextureHandle> {
+        let key = PreviewKey { document: doc.id, revision, name: item.name.clone(), layers: item.layers_hash, side: PREVIEW_SIDE };
+        self.stamp = self.stamp.wrapping_add(1);
+        let stamp = self.stamp;
+        if let Some(entry) = self.textures.get_mut(&key) {
+            entry.used = stamp;
+            return Some(entry.texture.clone());
+        }
+        let image = preview_image(doc, item, PREVIEW_SIDE)?;
+        let tex = ctx.load_texture(format!("color-preset-{}-{:016x}", item.name, item.layers_hash), image, egui::TextureOptions::LINEAR);
+        self.textures.insert(key, PreviewEntry { texture: tex.clone(), used: stamp });
+        Some(tex)
+    }
 }
 
 /// Read the library through its command, as the panel contract specifies.
@@ -689,11 +828,26 @@ fn look_stops(hint: BasicHint) -> [(f32, [f32; 4]); 2] {
     [(0.0, shifted([0.16, 0.17, 0.19])), (1.0, shifted([0.86, 0.87, 0.84]))]
 }
 
-/// The item card: the current image thumbnail washed with the look's shadow/highlight colours, or
-/// a neutral look gradient when there is no document thumbnail yet.
-fn paint_item(ui: &egui::Ui, rect: Rect, item: &LibraryItem, t: &Tokens, preview: Option<&egui::TextureHandle>) {
+/// `rect` shrunk to `image`'s aspect ratio, centred, so a wide image is not stretched into a square.
+fn fit_image(rect: Rect, image: egui::Vec2) -> Rect {
+    if image.x <= 0.0 || image.y <= 0.0 {
+        return rect;
+    }
+    let scale = (rect.width() / image.x).min(rect.height() / image.y);
+    Rect::from_center_size(rect.center(), image * scale)
+}
+
+/// The item card: the preset rendered through the current image when that preview exists; otherwise
+/// the current image thumbnail washed with the look's shadow/highlight colours, or a neutral look
+/// gradient when there is no document thumbnail yet.
+fn paint_item(ui: &egui::Ui, rect: Rect, item: &LibraryItem, t: &Tokens, preview: Option<&egui::TextureHandle>, thumbnail: Option<&egui::TextureHandle>) {
     let stops = item.hint.map_or_else(|| neutral_stops(t), look_stops);
     if let Some(tex) = preview {
+        // A real render: fill the letterbox with the field colour and keep the image's aspect.
+        ui.painter().rect_filled(rect, 0.0, t.field);
+        let fitted = fit_image(rect, tex.size_vec2());
+        ui.painter().image(tex.id(), fitted, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    } else if let Some(tex) = thumbnail {
         ui.painter().image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         let wash =
             |c: [f32; 4], a: u8| Color32::from_rgba_unmultiplied((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8, a);
@@ -715,7 +869,8 @@ fn paint_item(ui: &egui::Ui, rect: Rect, item: &LibraryItem, t: &Tokens, preview
     let strip_h = (rect.height() * 0.32).clamp(12.0, 18.0);
     let strip = Rect::from_min_max(pos2(rect.left(), rect.bottom() - strip_h), rect.max);
     ui.painter().rect_filled(strip, 0.0, t.scrim);
-    let label = if item.layers == 1 { tl!(text::ONE_LAYER).to_string() } else { crate::i18n::fmt(tl!(text::LAYERS), &[("n", &item.layers.to_string())]) };
+    let label =
+        if item.layer_count == 1 { tl!(text::ONE_LAYER).to_string() } else { crate::i18n::fmt(tl!(text::LAYERS), &[("n", &item.layer_count.to_string())]) };
     ui.painter().text(pos2(rect.center().x, strip.center().y), Align2::CENTER_CENTER, label, FontId::proportional(8.5), t.text);
 }
 
@@ -798,6 +953,7 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
 pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.panels.color_presets {
         app.ui.color_presets.batch_pending = None;
+        ctx.data_mut(|d| d.remove_temp::<PreviewCache>(preview_cache_id()));
         return;
     }
     poll_batch_job(app);
@@ -826,6 +982,11 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             .and_then(|layer| app.thumbs.get(&(layer.id, crate::mask_thumbs_ui::THUMB_LAYER)))
             .map(|(_, tex)| tex.clone())
     });
+    // The exact previews cache: keyed by the document state, the preset and its layers, and size.
+    // Taken out of egui's data for the draw and put back after it, so no context borrow is held.
+    let doc = app.session.active().map(|st| (st.doc.as_ref(), st.revision));
+    let mut previews = ctx.data_mut(|d| d.remove_temp::<PreviewCache>(preview_cache_id())).unwrap_or_default();
+    previews.begin(doc.map(|(doc, revision)| (doc.id, revision)));
     let mut st = std::mem::take(&mut app.ui.presets_ui);
     st.sizes.entry(PANEL.to_string()).or_insert(DEFAULT_THUMB);
     let mut events = Vec::new();
@@ -841,7 +1002,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let body_height = MAX_BODY.min(room);
     let thumb = &mut |ui: &egui::Ui, rect: Rect, gi: usize, ii: usize| {
         if let Some(item) = shown.groups.get(gi).and_then(|group| group.items.get(ii)) {
-            paint_item(ui, rect, item, &t, preview_tex.as_ref());
+            let preview = doc.and_then(|(doc, revision)| previews.texture(ui.ctx(), doc, revision, item));
+            paint_item(ui, rect, item, &t, preview.as_ref(), preview_tex.as_ref());
         }
     };
     egui::Window::new(tl!(text::TITLE))
@@ -908,6 +1070,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             let _ = body;
         });
     app.ui.presets_ui = st;
+    ctx.data_mut(|d| d.insert_temp(preview_cache_id(), previews));
     if !open {
         app.ui.panels.color_presets = false;
     }
@@ -929,6 +1092,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
 mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
+    use photocraft_color::{Color, ColorMode, SampleType};
+    use photocraft_geom::Size;
 
     use super::*;
 
@@ -1267,5 +1432,75 @@ mod tests {
         assert_eq!(title, "Preset màu");
         assert_eq!(save, "Lưu look hiện tại");
         assert_eq!(close, "Đóng");
+    }
+
+    fn synthetic_doc() -> Document {
+        Document::with_background("preview", Size::new(64, 48), ColorMode::Rgb, SampleType::U8, Color::rgba(0.42, 0.5, 0.58, 1.0))
+    }
+
+    /// The first item of a library holding one preset with `layers`.
+    fn library_item(layers: Value) -> LibraryItem {
+        let mut library = parse_library(&json!({"groups": [{"name": "Test", "presets": [{"name": "Look", "layers": layers}]}]}));
+        library.groups.remove(0).items.remove(0)
+    }
+
+    #[test]
+    fn preview_renders_the_preset_through_the_current_image() {
+        let doc = synthetic_doc();
+        let item = library_item(json!([{
+            "kind": "basicColor",
+            "name": "Basic Color",
+            "params": {"temperature": 70.0, "tint": -20.0, "exposure": 1.2, "contrast": 40.0, "saturation": 35.0},
+            "opacity": 0.5,
+            "blend": "Multiply"
+        }]));
+        let built = preview_document(&doc, &item).expect("the preset builds a preview document");
+        assert_eq!(built.layers[1].opacity, 0.5, "the layer's opacity is kept");
+        assert_eq!(built.layers[1].blend, BlendMode::Multiply, "the layer's blend mode is kept");
+        let preview = preview_image(&doc, &item, PREVIEW_SIDE).expect("a preset preview");
+        assert_eq!(preview.size, [64, 48], "the preview keeps the document's shape");
+        let plain = photocraft_compose::render_reduced(&doc, 64, 48).to_rgba8();
+        let plain = egui::ColorImage::from_rgba_unmultiplied([plain.width as usize, plain.height as usize], &plain.pixels);
+        assert_ne!(preview.pixels, plain.pixels, "the preset changes the rendered pixels");
+        assert_eq!(doc.layers.len(), 1, "the live document is untouched");
+    }
+
+    #[test]
+    fn unsupported_layers_fall_back_without_panicking() {
+        let doc = synthetic_doc();
+        for layers in [
+            json!([]),
+            json!([{"kind": "notAKind", "params": {}}]),
+            json!([{"kind": "basicColor", "params": "not an object"}]),
+            json!([{"kind": "", "params": {}}]),
+            json!([{"kind": "invert", "params": {}, "opacity": "half"}]),
+        ] {
+            let item = library_item(layers);
+            assert!(preview_image(&doc, &item, PREVIEW_SIDE).is_none(), "nothing can be recreated, so the card keeps its wash");
+        }
+        // One bad layer does not hide a good one, and an unknown blend becomes Normal.
+        let item = library_item(json!([
+            {"kind": "notAKind", "params": {}},
+            {"kind": "invert", "params": {}, "opacity": 1.0, "blend": "not a blend mode"}
+        ]));
+        let preview = preview_document(&doc, &item).expect("the valid layer previews");
+        assert_eq!(preview.layers.len(), 2, "only the valid layer was added");
+        assert_eq!(preview.layers[1].blend, BlendMode::Normal);
+        assert!(preview_image(&doc, &item, PREVIEW_SIDE).is_some());
+    }
+
+    #[test]
+    fn preview_textures_are_reused_until_the_document_state_changes() {
+        let ctx = egui::Context::default();
+        let doc = synthetic_doc();
+        let item = library_item(json!([{"kind": "invert", "params": {}}]));
+        let mut cache = PreviewCache::default();
+        cache.begin(Some((doc.id, 1)));
+        let first = cache.texture(&ctx, &doc, 1, &item).expect("the first preview");
+        let again = cache.texture(&ctx, &doc, 1, &item).expect("the cached preview");
+        assert_eq!(first.id(), again.id(), "the same key reuses the texture");
+        cache.begin(Some((doc.id, 2)));
+        let newer = cache.texture(&ctx, &doc, 2, &item).expect("the new revision's preview");
+        assert_ne!(first.id(), newer.id(), "a new revision renders a new preview");
     }
 }
