@@ -97,7 +97,7 @@ pub(crate) mod text {
     pub const BATCH_FINISHED: &str = "Batch finished: {files} files, {errors} errors";
     pub const BATCH_FAILED: &str = "Batch failed: {error}";
     pub const BATCH_ALL_FAILED: &str = "Batch failed: every file reported an error.";
-    pub const BATCH_CANCELLED: &str = "Batch cancelled. Files written by this run were removed.";
+    pub const BATCH_CANCELLED: &str = "Batch cancelled. Files written by this run and the empty subfolders it created were removed.";
 
     pub const LAYERS: &str = "{n} layers";
     pub const ONE_LAYER: &str = "1 layer";
@@ -1471,8 +1471,9 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_batch_status_says_the_run_removed_its_files() {
+    fn cancelled_batch_status_says_the_run_removed_its_files_and_empty_folders() {
         assert!(text::BATCH_CANCELLED.contains("removed"), "the status names the cleanup: {}", text::BATCH_CANCELLED);
+        assert!(text::BATCH_CANCELLED.contains("empty subfolders"), "the status names the folder cleanup: {}", text::BATCH_CANCELLED);
         let mut app = app_with_document();
         let id = gated_batch_job(&mut app);
         app.ui.color_presets.batch_job = Some(id);

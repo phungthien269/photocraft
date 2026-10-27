@@ -897,7 +897,8 @@ fn batch_cleanup_on_cancel_removes_only_the_outputs_it_created() {
         }
         Ok(())
     };
-    let opts = BatchRunOpts { cleanup_on_cancel: true };
+    // No root given: `process_tree_with` fills it from `out`, so the run still cleans folders.
+    let opts = BatchRunOpts { cleanup_on_cancel: true, cleanup_root: None };
     let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), opts);
     assert_eq!(r["files"].as_array().unwrap().len(), 2, "{r}");
     assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
@@ -908,6 +909,96 @@ fn batch_cleanup_on_cancel_removes_only_the_outputs_it_created() {
     assert_ne!(std::fs::read(&kept).unwrap(), b"pre-existing", "it was overwritten, not deleted");
     assert!(!std::path::Path::new(&b_out).exists(), "the new output is gone");
     assert!(!std::path::Path::new(&join(&out, "c.png")).exists(), "the cancelled file was never written");
+}
+
+/// A cancelled run takes back the folders its removed files leave empty, up to (not including)
+/// the output root.
+#[test]
+fn batch_cleanup_on_cancel_removes_the_empty_folders_it_created() {
+    let dir = tmp("batch-cancel-empty-folders");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    for name in ["a.png", "b.png"] {
+        png(&input, name, 8, 8, "#ff0000");
+    }
+    let out = join(&dir, "out");
+    let inputs = vec![BatchInput { path: join(&input, "a.png"), rel_dir: "one/two".into() }, BatchInput { path: join(&input, "b.png"), rel_dir: "one".into() }];
+    let ctx = crate::jobs::JobCtx::new();
+    let runs = std::sync::atomic::AtomicUsize::new(0);
+    let run = |_: &mut Session| {
+        // Cancel while the second file runs: both results are written, then taken back.
+        if runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+            ctx.cancel();
+        }
+        Ok(())
+    };
+    let opts = BatchRunOpts { cleanup_on_cancel: true, ..Default::default() };
+    let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), opts);
+    assert_eq!(r["removed"].as_array().unwrap().len(), 2, "{r}");
+    let nested = join(&join(&out, "one"), "two");
+    assert!(!std::path::Path::new(&nested).exists(), "the nested folder the run created is gone: {r}");
+    assert!(!std::path::Path::new(&join(&out, "one")).exists(), "a folder left empty is gone: {r}");
+    assert!(std::path::Path::new(&out).is_dir(), "the output root itself stays");
+}
+
+/// A folder that still holds a file from before the run is kept, with that file.
+#[test]
+fn batch_cleanup_on_cancel_keeps_a_folder_with_a_preexisting_file() {
+    let dir = tmp("batch-cancel-kept-folder");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    for name in ["a.png", "b.png"] {
+        png(&input, name, 8, 8, "#0000ff");
+    }
+    let out = join(&dir, "out");
+    let keep = join(&out, "keep");
+    std::fs::create_dir_all(&keep).unwrap();
+    let kept = join(&keep, "notes.txt");
+    std::fs::write(&kept, b"mine").unwrap();
+    let inputs = vec![BatchInput { path: join(&input, "a.png"), rel_dir: "keep".into() }, BatchInput { path: join(&input, "b.png"), rel_dir: "keep".into() }];
+    let ctx = crate::jobs::JobCtx::new();
+    let runs = std::sync::atomic::AtomicUsize::new(0);
+    let run = |_: &mut Session| {
+        if runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+            ctx.cancel();
+        }
+        Ok(())
+    };
+    let opts = BatchRunOpts { cleanup_on_cancel: true, ..Default::default() };
+    let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), opts);
+    assert_eq!(r["removed"].as_array().unwrap().len(), 2, "{r}");
+    assert!(std::path::Path::new(&kept).is_file(), "the pre-existing file is kept");
+    assert!(std::path::Path::new(&keep).is_dir(), "its folder is kept");
+    assert!(!std::path::Path::new(&join(&keep, "a.png")).exists(), "{r}");
+    assert!(!std::path::Path::new(&join(&keep, "b.png")).exists(), "{r}");
+    assert!(std::path::Path::new(&out).is_dir(), "the output root stays");
+}
+
+/// Without cleanup the folders and files the cancelled run wrote stay.
+#[test]
+fn batch_cancel_without_cleanup_keeps_the_folders_it_created() {
+    let dir = tmp("batch-cancel-keep-folders");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    for name in ["a.png", "b.png"] {
+        png(&input, name, 8, 8, "#00ff00");
+    }
+    let out = join(&dir, "out");
+    let inputs = vec![BatchInput { path: join(&input, "a.png"), rel_dir: "one/two".into() }, BatchInput { path: join(&input, "b.png"), rel_dir: "one".into() }];
+    let ctx = crate::jobs::JobCtx::new();
+    let runs = std::sync::atomic::AtomicUsize::new(0);
+    let run = |_: &mut Session| {
+        if runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+            ctx.cancel();
+        }
+        Ok(())
+    };
+    let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), BatchRunOpts::default());
+    assert!(r.get("removed").is_none(), "the default result shape is unchanged: {r}");
+    let nested = join(&join(&out, "one"), "two");
+    assert!(std::path::Path::new(&nested).is_dir(), "the nested folder stays");
+    assert!(std::path::Path::new(&join(&nested, "a.png")).is_file(), "{r}");
+    assert!(std::path::Path::new(&join(&join(&out, "one"), "b.png")).is_file(), "{r}");
 }
 
 #[test]

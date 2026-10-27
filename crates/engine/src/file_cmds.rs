@@ -122,6 +122,30 @@ fn remove_output(_path: &str) -> bool {
     false
 }
 
+/// Remove the folders a deleted output left empty, from its parent up to (never including) `root`.
+/// A folder that still holds anything stops the walk, as does one that can't be removed; a path
+/// outside `root` is left alone, and an empty root never enables a walk.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_empty_parents(file: &str, root: &str) {
+    let root = std::path::Path::new(root);
+    if root.as_os_str().is_empty() {
+        return;
+    }
+    let mut dir = std::path::Path::new(file).parent();
+    while let Some(d) = dir {
+        if d == root || !d.starts_with(root) {
+            return;
+        }
+        // `remove_dir` refuses a folder that still holds a file or subfolder: the walk stops there.
+        if std::fs::remove_dir(d).is_err() {
+            return;
+        }
+        dir = d.parent();
+    }
+}
+#[cfg(target_arch = "wasm32")]
+fn remove_empty_parents(_file: &str, _root: &str) {}
+
 /// Files of a folder that look like images we can open, sorted by name.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_images(dir: &str) -> Result<Vec<String>> {
@@ -1136,11 +1160,14 @@ pub(crate) fn process_tree(
 }
 
 /// What a batch run does beyond writing its outputs.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct BatchRunOpts {
     /// On cancel, delete the output files this run created. A file that already existed before
     /// the run is kept (it may have been overwritten, but it was not ours to remove).
     pub cleanup_on_cancel: bool,
+    /// Root of the outputs. With cleanup on, the folders a removed file leaves empty below this
+    /// root are removed too; the root itself never is. `None` leaves every folder in place.
+    pub cleanup_root: Option<String>,
 }
 
 /// [`process_tree`] with [`BatchRunOpts`] (the Batch command's `cleanupOnCancel`).
@@ -1155,8 +1182,10 @@ pub(crate) fn process_tree_with(
     suffix: &str,
     f: &dyn Fn(&mut Session) -> Result<()>,
     ctl: Option<&JobCtx>,
-    opts: BatchRunOpts,
+    mut opts: BatchRunOpts,
 ) -> Value {
+    // Every output of a tree run lives under `output`, so cleanup never goes above it.
+    opts.cleanup_root = Some(output.to_string());
     let outputs = inputs.iter().map(|BatchInput { path, rel_dir }| {
         let ext =
             if format == "same" { path.rsplit('.').next().unwrap_or("png").to_ascii_lowercase() } else { format.trim_start_matches('.').to_ascii_lowercase() };
@@ -1221,6 +1250,12 @@ fn process_outputs_with<'a>(
     if cancelled {
         if opts.cleanup_on_cancel {
             let removed: Vec<String> = created.into_iter().filter(|path| remove_output(path)).collect();
+            // The folders those files leave empty go too, but never the output root itself.
+            if let Some(root) = opts.cleanup_root.as_deref() {
+                for path in &removed {
+                    remove_empty_parents(path, root);
+                }
+            }
             result["removed"] = json!(removed);
         }
     } else if let Some(c) = ctl {
@@ -1278,7 +1313,7 @@ fn batch_apply(plan: &BatchPlan, ctl: Option<&JobCtx>) -> Result<Value> {
         }
         Ok(())
     };
-    let opts = BatchRunOpts { cleanup_on_cancel: plan.cleanup_on_cancel };
+    let opts = BatchRunOpts { cleanup_on_cancel: plan.cleanup_on_cancel, cleanup_root: Some(plan.output.clone()) };
     let r = match &plan.names {
         Some(names) => process_outputs_with(plan.inputs.iter().map(|i| i.path.as_str()).zip(names.iter().cloned()), plan.save, &run, ctl, opts),
         None => process_tree_with(&plan.inputs, &plan.output, &plan.format, plan.save, "", &run, ctl, opts),
@@ -1845,7 +1880,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Batch…",
             &["File", "Automate"],
             None,
-            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's),"cleanupOnCancel":bool=false (a cancelled run deletes the output files it created; a file that already existed is kept)} → {files, errors} (an input whose output name was already written in the run goes to errors; a cancelled run with cleanupOnCancel also reports "removed")"##,
+            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's),"cleanupOnCancel":bool=false (a cancelled run deletes the output files and the now-empty subfolders it created; a file or folder that already existed is kept)} → {files, errors} (an input whose output name was already written in the run goes to errors; a cancelled run with cleanupOnCancel also reports "removed")"##,
             native,
             batch
         ),
