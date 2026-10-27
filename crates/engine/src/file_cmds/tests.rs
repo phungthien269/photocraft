@@ -898,7 +898,7 @@ fn batch_cleanup_on_cancel_removes_only_the_outputs_it_created() {
         Ok(())
     };
     // No root given: `process_tree_with` fills it from `out`, so the run still cleans folders.
-    let opts = BatchRunOpts { cleanup_on_cancel: true, cleanup_root: None };
+    let opts = BatchRunOpts { cleanup_on_cancel: true, cleanup_root: None, ..Default::default() };
     let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), opts);
     assert_eq!(r["files"].as_array().unwrap().len(), 2, "{r}");
     assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
@@ -909,6 +909,63 @@ fn batch_cleanup_on_cancel_removes_only_the_outputs_it_created() {
     assert_ne!(std::fs::read(&kept).unwrap(), b"pre-existing", "it was overwritten, not deleted");
     assert!(!std::path::Path::new(&b_out).exists(), "the new output is gone");
     assert!(!std::path::Path::new(&join(&out, "c.png")).exists(), "the cancelled file was never written");
+}
+
+/// `skipExisting` leaves an output that is already there alone, even when the run is cancelled
+/// with cleanup on: the run never wrote it, so it is not its to remove.
+#[test]
+fn batch_skip_existing_keeps_an_existing_output_on_cancel() {
+    let dir = tmp("batch-skip-existing-cancel");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    for name in ["a.png", "b.png", "c.png"] {
+        png(&input, name, 8, 8, "#ff0000");
+    }
+    let out = join(&dir, "out");
+    std::fs::create_dir_all(&out).unwrap();
+    let kept = join(&out, "a.png");
+    std::fs::write(&kept, b"already done").unwrap();
+    let inputs: Vec<BatchInput> = ["a.png", "b.png", "c.png"].iter().map(|name| BatchInput { path: join(&input, name), rel_dir: String::new() }).collect();
+    let ctx = crate::jobs::JobCtx::new();
+    let runs = std::sync::atomic::AtomicUsize::new(0);
+    let run = |_: &mut Session| {
+        // `a.png` is skipped, so the first file that actually runs is `b.png`; cancel while it
+        // runs, before `c.png` starts.
+        if runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            ctx.cancel();
+        }
+        Ok(())
+    };
+    let opts = BatchRunOpts { cleanup_on_cancel: true, skip_existing: true, ..Default::default() };
+    let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), opts);
+    assert_eq!(r["skipped"], json!(1), "the existing output is counted as skipped: {r}");
+    assert_eq!(r["files"].as_array().unwrap().len(), 1, "only b.png ran: {r}");
+    let b_out = join(&out, "b.png");
+    assert_eq!(r["removed"], json!([b_out]), "the file this run created is taken back: {r}");
+    assert_eq!(std::fs::read(&kept).unwrap(), b"already done", "the skipped output is untouched");
+    assert!(!std::path::Path::new(&join(&out, "c.png")).exists(), "the run stopped after the cancel");
+}
+
+/// A missing output is processed as usual when `skipExisting` is on (the Resume path).
+#[test]
+fn batch_skip_existing_processes_a_missing_output() {
+    let dir = tmp("batch-skip-existing-missing");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    for name in ["a.png", "b.png"] {
+        png(&input, name, 8, 8, "#0000ff");
+    }
+    let out = join(&dir, "out");
+    std::fs::create_dir_all(&out).unwrap();
+    let kept = join(&out, "a.png");
+    std::fs::write(&kept, b"already done").unwrap();
+    let mut s = Session::new();
+    let r = s.execute("file.automate.batch", json!({"steps": [], "input": input, "output": out, "format": "png", "skipExisting": true})).unwrap();
+    assert_eq!(r["skipped"], json!(1), "{r}");
+    assert_eq!(r["files"], json!([join(&out, "b.png")]), "{r}");
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(std::fs::read(&kept).unwrap(), b"already done", "the skipped output is untouched");
+    assert!(std::path::Path::new(&join(&out, "b.png")).is_file(), "the missing output was written");
 }
 
 /// A cancelled run takes back the folders its removed files leave empty, up to (not including)

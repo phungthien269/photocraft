@@ -3801,6 +3801,7 @@ curves	Smooth	Làm mượt
 	Run Batch	Chạy hàng loạt
 	Choose both an input and an output folder.	Hãy chọn cả thư mục vào và ra.
 	Batch finished: {files} files, {errors} errors	Hàng loạt xong: {files} tệp, {errors} lỗi
+	Batch finished: {files} files, {skipped} skipped, {errors} errors	Hàng loạt xong: {files} tệp, bỏ qua {skipped}, {errors} lỗi
 	Batch failed: {error}	Hàng loạt thất bại: {error}
 	Removes blemishes, spots and redness in the skin area while keeping texture.	Xóa mụn, vết thâm và đốm đỏ trong vùng da, giữ lại kết cấu.
 	Dodges and burns the skin to soften under-eye shadows and smile lines.	Làm sáng và tối vùng da để giảm bọng mắt và nếp cười.
@@ -3878,6 +3879,7 @@ curves	Smooth	Làm mượt
 	Preset edit failed: {error}	Sửa preset thất bại: {error}
 	Apply to Images	Áp cho nhiều ảnh
 	Include subfolders	Gồm thư mục con
+	Keep files if cancelled, so I can resume	Giữ các tệp đã ghi khi hủy để có thể chạy tiếp.
 	Run	Chạy
 	Running…	Đang chạy…
 	Resume	Tiếp tục
@@ -3888,6 +3890,7 @@ curves	Smooth	Làm mượt
 	Choose a different output folder.	Hãy chọn thư mục đích khác thư mục nguồn.
 	Batch failed: every file reported an error.	Hàng loạt thất bại: mọi tệp đều báo lỗi.
 	Batch cancelled. Files written by this run and the empty subfolders it created were removed.	Đã hủy batch. Các tệp do lần chạy này ghi và các thư mục con rỗng do nó tạo đã được xóa.
+	Batch cancelled. Files already written were kept; Resume continues from the first missing file.	Đã hủy batch. Các tệp đã ghi được giữ lại; Tiếp tục sẽ chạy từ tệp còn thiếu đầu tiên.
 	{n} layers	{n} lớp
 	1 layer	1 lớp
 	Presets…	Preset…

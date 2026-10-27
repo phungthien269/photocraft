@@ -84,6 +84,7 @@ pub(crate) mod text {
     pub const PNG: &str = "PNG";
     pub const TIFF: &str = "TIFF";
     pub const INCLUDE_SUBFOLDERS: &str = "Include subfolders";
+    pub const KEEP_PARTIAL: &str = "Keep files if cancelled, so I can resume";
     pub const RUN: &str = "Run";
     pub const RUNNING: &str = "Running…";
     pub const PAUSE: &str = "Pause";
@@ -95,9 +96,11 @@ pub(crate) mod text {
     pub const CHOOSE_FOLDERS: &str = "Choose both an input and an output folder.";
     pub const CHOOSE_DIFFERENT: &str = "Choose a different output folder.";
     pub const BATCH_FINISHED: &str = "Batch finished: {files} files, {errors} errors";
+    pub const BATCH_FINISHED_SKIPPED: &str = "Batch finished: {files} files, {skipped} skipped, {errors} errors";
     pub const BATCH_FAILED: &str = "Batch failed: {error}";
     pub const BATCH_ALL_FAILED: &str = "Batch failed: every file reported an error.";
     pub const BATCH_CANCELLED: &str = "Batch cancelled. Files written by this run and the empty subfolders it created were removed.";
+    pub const BATCH_CANCELLED_KEPT: &str = "Batch cancelled. Files already written were kept; Resume continues from the first missing file.";
 
     pub const LAYERS: &str = "{n} layers";
     pub const ONE_LAYER: &str = "1 layer";
@@ -131,6 +134,7 @@ pub(crate) mod text {
         PNG,
         TIFF,
         INCLUDE_SUBFOLDERS,
+        KEEP_PARTIAL,
         RUN,
         RUNNING,
         PAUSE,
@@ -142,9 +146,11 @@ pub(crate) mod text {
         CHOOSE_FOLDERS,
         CHOOSE_DIFFERENT,
         BATCH_FINISHED,
+        BATCH_FINISHED_SKIPPED,
         BATCH_FAILED,
         BATCH_ALL_FAILED,
         BATCH_CANCELLED,
+        BATCH_CANCELLED_KEPT,
         LAYERS,
         ONE_LAYER,
     ];
@@ -160,6 +166,8 @@ pub struct ColorPresetsState {
     /// `same`, `jpg`, `png` or `tiff`.
     pub batch_format: String,
     pub include_subfolders: bool,
+    /// Keep the files a cancelled batch already wrote, so Resume can continue it.
+    pub keep_partial: bool,
     /// The batch section is open (it starts open: the feature must be discoverable).
     pub batch_open: bool,
     /// The preset browser's name filter.
@@ -187,6 +195,13 @@ pub struct ColorPresetsState {
     /// The running batch is paused (it stops at its next safe point). Session-only.
     #[serde(skip)]
     pub batch_paused: bool,
+    /// The last validated batch, kept after a cancel that left its files, so Resume can rerun it
+    /// with `skipExisting`. Session-only.
+    #[serde(skip)]
+    pub last_batch: Option<Value>,
+    /// A kept batch can be resumed from its first missing output. Session-only.
+    #[serde(skip)]
+    pub batch_resume_ready: bool,
 }
 
 impl Default for ColorPresetsState {
@@ -196,6 +211,7 @@ impl Default for ColorPresetsState {
             batch_output: String::new(),
             batch_format: "same".into(),
             include_subfolders: false,
+            keep_partial: false,
             batch_open: true,
             search: String::new(),
             status: String::new(),
@@ -208,6 +224,8 @@ impl Default for ColorPresetsState {
             batch_progress: 0.0,
             batch_message: String::new(),
             batch_paused: false,
+            last_batch: None,
+            batch_resume_ready: false,
         }
     }
 }
@@ -590,15 +608,20 @@ fn queue_batch(app: &mut PhotocraftApp) {
         set_batch_status(app, tl!(text::CHOOSE_DIFFERENT).into(), true);
         return;
     }
-    app.ui.color_presets.batch_pending = Some(json!({
+    let params = json!({
         "steps": [["color.presets.apply", {"preset": preset}]],
         "input": input,
         "output": output,
         "format": format,
         "includeSubfolders": include_subfolders,
-        // A cancelled run takes back the files it wrote (Color Presets owns its batch output).
-        "cleanupOnCancel": true,
-    }));
+        // A cancelled run takes back the files it wrote unless the user asked to keep them for a
+        // later Resume (Color Presets owns its batch output).
+        "cleanupOnCancel": !app.ui.color_presets.keep_partial,
+    });
+    // Remember what a Resume would rerun; a fresh run replaces any earlier kept batch.
+    app.ui.color_presets.last_batch = Some(params.clone());
+    app.ui.color_presets.batch_resume_ready = false;
+    app.ui.color_presets.batch_pending = Some(params);
 }
 
 fn clear_batch_job(app: &mut PhotocraftApp) {
@@ -609,16 +632,58 @@ fn clear_batch_job(app: &mut PhotocraftApp) {
     app.ui.color_presets.batch_paused = false;
 }
 
+/// Forget the kept batch: it finished, failed, or was cancelled without keeping its files.
+fn clear_resume(app: &mut PhotocraftApp) {
+    app.ui.color_presets.last_batch = None;
+    app.ui.color_presets.batch_resume_ready = false;
+}
+
+/// Whether the queued batch asked the engine to keep its files on cancel.
+fn batch_files_kept(state: &ColorPresetsState) -> bool {
+    state.last_batch.as_ref().and_then(|params| params.get("cleanupOnCancel")).and_then(Value::as_bool).map_or(state.keep_partial, |cleanup| !cleanup)
+}
+
 fn finish_batch_value(app: &mut PhotocraftApp, value: &Value) {
     let (message, error) = batch_status(value);
     set_batch_status(app, message, error);
+    clear_resume(app);
     clear_batch_job(app);
 }
 
 fn finish_batch_error(app: &mut PhotocraftApp, error: &str) {
     let message = crate::i18n::fmt(tl!(text::BATCH_FAILED), &[("error", error)]);
     set_batch_status(app, message, true);
+    clear_resume(app);
     clear_batch_job(app);
+}
+
+/// Stop a batch and say what happened to its files: kept for Resume, or removed by the engine.
+fn finish_batch_cancel(app: &mut PhotocraftApp) {
+    if batch_files_kept(&app.ui.color_presets) && app.ui.color_presets.last_batch.is_some() {
+        app.ui.color_presets.batch_resume_ready = true;
+        set_batch_status(app, tl!(text::BATCH_CANCELLED_KEPT).into(), false);
+    } else {
+        clear_resume(app);
+        set_batch_status(app, tl!(text::BATCH_CANCELLED).into(), false);
+    }
+    clear_batch_job(app);
+}
+
+/// Continue a cancelled batch from its first missing output: the same parameters with
+/// `skipExisting`, so the files it already wrote are left alone and only the rest is processed.
+fn resume_kept_batch(app: &mut PhotocraftApp) {
+    let Some(mut params) = app.ui.color_presets.last_batch.clone() else {
+        app.ui.color_presets.batch_resume_ready = false;
+        return;
+    };
+    // The cancelled worker may still be finishing its last file: let it stop before the resume
+    // reads the same folder, so the two runs can never write one output.
+    app.session.join_cancelled_jobs();
+    params["skipExisting"] = json!(true);
+    params["cleanupOnCancel"] = json!(!app.ui.color_presets.keep_partial);
+    app.ui.color_presets.batch_resume_ready = false;
+    app.ui.color_presets.batch_pending = Some(params);
+    set_batch_status(app, tl!(text::RESUMING).into(), false);
 }
 
 /// Run a validated batch as a background job (on the frame after [`queue_batch`], once the busy
@@ -665,10 +730,7 @@ fn poll_batch_job(app: &mut PhotocraftApp) {
             }
         }
         "failed" => finish_batch_error(app, info.error.as_deref().unwrap_or("batch failed")),
-        "cancelled" => {
-            set_batch_status(app, tl!(text::BATCH_CANCELLED).to_string(), false);
-            clear_batch_job(app);
-        }
+        "cancelled" => finish_batch_cancel(app),
         _ => {}
     }
 }
@@ -677,8 +739,15 @@ fn poll_batch_job(app: &mut PhotocraftApp) {
 fn batch_status(value: &Value) -> (String, bool) {
     let files = value.get("files").and_then(Value::as_array).map_or(0, Vec::len);
     let errors = value.get("errors").and_then(Value::as_array).map_or(0, Vec::len);
+    let skipped = value.get("skipped").and_then(Value::as_u64).unwrap_or(0);
     if files == 0 && errors > 0 {
         (tl!(text::BATCH_ALL_FAILED).into(), true)
+    } else if skipped > 0 {
+        let message = crate::i18n::fmt(
+            tl!(text::BATCH_FINISHED_SKIPPED),
+            &[("files", &files.to_string()), ("skipped", &skipped.to_string()), ("errors", &errors.to_string())],
+        );
+        (message, errors > 0)
     } else {
         let message = crate::i18n::fmt(tl!(text::BATCH_FINISHED), &[("files", &files.to_string()), ("errors", &errors.to_string())]);
         (message, errors > 0)
@@ -787,6 +856,7 @@ enum Action {
     RunBatch,
     PauseBatch,
     ResumeBatch,
+    ResumeKeptBatch,
     CancelBatch,
 }
 
@@ -824,12 +894,12 @@ fn apply_action(app: &mut PhotocraftApp, action: Action) {
                 set_batch_status(app, tl!(text::RESUMING).to_string(), false);
             }
         }
+        Action::ResumeKeptBatch => resume_kept_batch(app),
         Action::CancelBatch => {
             if let Some(id) = app.ui.color_presets.batch_job {
                 app.session.cancel_job(id);
             }
-            set_batch_status(app, tl!(text::BATCH_CANCELLED).to_string(), false);
-            clear_batch_job(app);
+            finish_batch_cancel(app);
         }
     }
 }
@@ -974,6 +1044,7 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
         }
     });
     ui.checkbox(&mut state.include_subfolders, tl!(text::INCLUDE_SUBFOLDERS));
+    ui.checkbox(&mut state.keep_partial, tl!(text::KEEP_PARTIAL));
     let run = ui.add_enabled(has_document && !state.batch_running, egui::Button::new(tl!(text::RUN)));
     if run.clicked() {
         actions.push(Action::RunBatch);
@@ -994,6 +1065,9 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
         if !state.batch_message.is_empty() {
             ui.add(egui::Label::new(egui::RichText::new(&state.batch_message).size(11.0).color(t.text_dim)).wrap());
         }
+    }
+    if state.batch_resume_ready && !state.batch_running && widgets::secondary_button(ui, tl!(text::RESUME), 0.0).clicked() {
+        actions.push(Action::ResumeKeptBatch);
     }
     if !state.batch_status.is_empty() {
         let color = if state.batch_status_error { t.danger } else { t.text_dim };
@@ -1186,6 +1260,7 @@ mod tests {
         let state = ColorPresetsState::default();
         assert_eq!(state.batch_format, "same");
         assert!(state.batch_open, "the batch stays discoverable");
+        assert!(!state.keep_partial, "files are cleaned up on cancel unless the user opts out");
         let encoded = serde_json::to_string(&state).expect("serialize");
         let back: ColorPresetsState = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(state, back);
@@ -1418,9 +1493,94 @@ mod tests {
         apply_action(&mut app, Action::CancelBatch);
         assert!(!app.ui.color_presets.batch_running && app.ui.color_presets.batch_job.is_none());
         assert_eq!(app.ui.color_presets.batch_status, text::BATCH_CANCELLED);
+        assert!(app.ui.color_presets.last_batch.is_none(), "a default cancel leaves nothing to resume");
+        assert!(!app.ui.color_presets.batch_resume_ready);
         assert!(app.session.job(job).is_none(), "cancel removes the running job");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keep_partial_makes_a_batch_keep_its_files_on_cancel() {
+        let mut app = app_with_document();
+        app.ui.presets_ui.selected.insert(PANEL.into(), "Warm Portrait".into());
+        app.ui.color_presets.batch_input = "/photos/in".into();
+        app.ui.color_presets.batch_output = "/photos/out".into();
+        app.ui.color_presets.keep_partial = true;
+        queue_batch(&mut app);
+        let params = app.ui.color_presets.batch_pending.clone().expect("the batch is queued");
+        assert_eq!(params["cleanupOnCancel"], json!(false), "the run keeps its files");
+        assert_eq!(app.ui.color_presets.last_batch.as_ref(), Some(&params), "the validated batch is remembered");
+        assert!(!app.ui.color_presets.batch_resume_ready, "a fresh run is not a resume");
+    }
+
+    #[test]
+    fn cancel_with_kept_files_offers_resume_from_the_first_missing_output() {
+        let mut app = app_with_document();
+        app.ui.presets_ui.selected.insert(PANEL.into(), "Warm Portrait".into());
+        app.ui.color_presets.batch_input = "/photos/in".into();
+        app.ui.color_presets.batch_output = "/photos/out".into();
+        app.ui.color_presets.keep_partial = true;
+        queue_batch(&mut app);
+        app.ui.color_presets.batch_pending = None;
+        let id = gated_batch_job(&mut app);
+        app.ui.color_presets.batch_job = Some(id);
+        app.ui.color_presets.batch_running = true;
+        apply_action(&mut app, Action::CancelBatch);
+        assert!(app.ui.color_presets.batch_resume_ready, "Resume is offered");
+        assert_eq!(app.ui.color_presets.batch_status, text::BATCH_CANCELLED_KEPT);
+        assert!(app.ui.color_presets.last_batch.is_some(), "the batch is kept for Resume");
+        app.session.join_cancelled_jobs();
+
+        apply_action(&mut app, Action::ResumeKeptBatch);
+        let params = app.ui.color_presets.batch_pending.clone().expect("the resume is queued");
+        assert_eq!(params["skipExisting"], json!(true), "Resume skips the outputs that already exist");
+        assert_eq!(params["cleanupOnCancel"], json!(false), "Resume follows the current keep choice");
+        assert_eq!(params["input"], json!("/photos/in"), "Resume reruns the same batch");
+        assert!(!app.ui.color_presets.batch_resume_ready, "Resume is queued once");
+        assert_eq!(app.ui.color_presets.batch_status, text::RESUMING);
+    }
+
+    #[test]
+    fn cancel_without_keep_partial_cleans_and_clears_resume_state() {
+        let mut app = app_with_document();
+        app.ui.presets_ui.selected.insert(PANEL.into(), "Warm Portrait".into());
+        app.ui.color_presets.batch_input = "/photos/in".into();
+        app.ui.color_presets.batch_output = "/photos/out".into();
+        queue_batch(&mut app);
+        let params = app.ui.color_presets.batch_pending.clone().expect("the batch is queued");
+        assert_eq!(params["cleanupOnCancel"], json!(true), "the default run takes its files back");
+        app.ui.color_presets.batch_pending = None;
+        let id = gated_batch_job(&mut app);
+        app.ui.color_presets.batch_job = Some(id);
+        app.ui.color_presets.batch_running = true;
+        apply_action(&mut app, Action::CancelBatch);
+        assert_eq!(app.ui.color_presets.batch_status, text::BATCH_CANCELLED);
+        assert!(!app.ui.color_presets.batch_resume_ready);
+        assert!(app.ui.color_presets.last_batch.is_none(), "nothing to resume");
+        app.session.join_cancelled_jobs();
+    }
+
+    #[test]
+    fn a_finished_resume_clears_its_state_and_counts_the_skipped_files() {
+        let mut app = app_with_document();
+        app.ui.color_presets.last_batch = Some(json!({"steps": [], "input": "/photos/in", "output": "/photos/out"}));
+        app.ui.color_presets.batch_resume_ready = true;
+        finish_batch_value(&mut app, &json!({"files": ["/photos/out/b.png"], "errors": [], "skipped": 2}));
+        assert!(!app.ui.color_presets.batch_resume_ready && app.ui.color_presets.last_batch.is_none(), "completion clears Resume");
+        assert_eq!(app.ui.color_presets.batch_status, "Batch finished: 1 files, 2 skipped, 0 errors");
+        assert!(!app.ui.color_presets.batch_status_error);
+    }
+
+    #[test]
+    fn the_resume_button_is_drawn_after_a_cancel_that_kept_files() {
+        let mut app = app_with_document();
+        app.ui.color_presets.last_batch = Some(json!({"steps": [], "input": "/photos/in", "output": "/photos/out"}));
+        app.ui.color_presets.batch_resume_ready = true;
+        app.ui.color_presets.batch_status = text::BATCH_CANCELLED_KEPT.into();
+        let h = harness(app, vec2(900.0, 800.0));
+        assert!(h.query_all_by_label(text::RESUME).next().is_some(), "the kept batch offers Resume");
+        assert!(h.query_all_by_label(text::BATCH_CANCELLED_KEPT).next().is_some(), "the status says the files were kept");
     }
 
     /// A background batch job that runs until it is cancelled, so pause/resume can be observed.

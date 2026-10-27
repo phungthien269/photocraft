@@ -1168,6 +1168,9 @@ pub(crate) struct BatchRunOpts {
     /// Root of the outputs. With cleanup on, the folders a removed file leaves empty below this
     /// root are removed too; the root itself never is. `None` leaves every folder in place.
     pub cleanup_root: Option<String>,
+    /// Skip an input whose output already exists: it is not opened, saved or counted in `files`,
+    /// but in `skipped`. A skipped file is never removed by a cancel (the run did not write it).
+    pub skip_existing: bool,
 }
 
 /// [`process_tree`] with [`BatchRunOpts`] (the Batch command's `cleanupOnCancel`).
@@ -1208,6 +1211,8 @@ fn process_outputs_with<'a>(
     let mut written = OutputClaims::default();
     // Outputs this run created (not overwritten), so a cancelled run can take back only those.
     let mut created: Vec<String> = Vec::new();
+    // Inputs whose output already existed, skipped at the caller's request (`skipExisting`).
+    let mut skipped = 0usize;
     let mut cancelled = false;
     for (i, (path, out)) in outputs.into_iter().enumerate() {
         // Pausing and cancellation are checked between files. The scratch session also carries
@@ -1218,6 +1223,10 @@ fn process_outputs_with<'a>(
         {
             cancelled = true;
             break;
+        }
+        if opts.skip_existing && output_exists(&out) {
+            skipped += 1;
+            continue;
         }
         if let Some(c) = ctl {
             c.progress(i as f32 / total as f32, &format!("Processing {}", file_name(path)));
@@ -1253,6 +1262,9 @@ fn process_outputs_with<'a>(
     // A cancel that lands just as the last file ends still counts: the run was cancelled.
     cancelled |= ctl.is_some_and(JobCtx::cancelled);
     let mut result = json!({"files": files, "errors": errors});
+    if opts.skip_existing {
+        result["skipped"] = json!(skipped);
+    }
     if cancelled {
         if opts.cleanup_on_cancel {
             let removed: Vec<String> = created.into_iter().filter(|path| remove_output(path)).collect();
@@ -1304,6 +1316,8 @@ struct BatchPlan {
     color_presets: Vec<Group<ColorPreset>>,
     /// Delete the outputs this run created if the job is cancelled.
     cleanup_on_cancel: bool,
+    /// Skip inputs whose output already exists (Resume after a cancelled run).
+    skip_existing: bool,
 }
 
 fn batch_apply(plan: &BatchPlan, ctl: Option<&JobCtx>) -> Result<Value> {
@@ -1319,7 +1333,7 @@ fn batch_apply(plan: &BatchPlan, ctl: Option<&JobCtx>) -> Result<Value> {
         }
         Ok(())
     };
-    let opts = BatchRunOpts { cleanup_on_cancel: plan.cleanup_on_cancel, cleanup_root: Some(plan.output.clone()) };
+    let opts = BatchRunOpts { cleanup_on_cancel: plan.cleanup_on_cancel, cleanup_root: Some(plan.output.clone()), skip_existing: plan.skip_existing };
     let r = match &plan.names {
         Some(names) => process_outputs_with(plan.inputs.iter().map(|i| i.path.as_str()).zip(names.iter().cloned()), plan.save, &run, ctl, opts),
         None => process_tree_with(&plan.inputs, &plan.output, &plan.format, plan.save, "", &run, ctl, opts),
@@ -1363,7 +1377,8 @@ fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // the built-ins (Color Presets batch uses `color.presets.apply` by name).
     let color_presets = s.presets.color_presets.clone();
     let cleanup_on_cancel = p.get("cleanupOnCancel").and_then(Value::as_bool).unwrap_or(false);
-    let plan = BatchPlan { steps, output, inputs, format, names, save, actions, color_presets, cleanup_on_cancel };
+    let skip_existing = p.get("skipExisting").and_then(Value::as_bool).unwrap_or(false);
+    let plan = BatchPlan { steps, output, inputs, format, names, save, actions, color_presets, cleanup_on_cancel, skip_existing };
     // `jobs::run` spawns when the command was started with `Session::start`, and runs inline for
     // scripts/tests. Batch has no active document to lock; each file gets a scratch session.
     crate::jobs::run(s, "Batch", false, move |ctx| batch_apply(&plan, Some(ctx)), |_s, r| Ok(r))
@@ -1886,7 +1901,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Batch…",
             &["File", "Automate"],
             None,
-            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's),"cleanupOnCancel":bool=false (a cancelled run deletes the output files and the now-empty subfolders it created; a file or folder that already existed is kept)} → {files, errors} (an input whose output name was already written in the run goes to errors; a cancelled run with cleanupOnCancel also reports "removed")"##,
+            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's),"cleanupOnCancel":bool=false (a cancelled run deletes the output files and the now-empty subfolders it created; a file or folder that already existed is kept),"skipExisting":bool=false (an input whose output already exists is skipped without being opened or saved, never removed by a cancel, and counted in "skipped" instead of "files")} → {files, errors} (an input whose output name was already written in the run goes to errors; a cancelled run with cleanupOnCancel also reports "removed"; skipExisting also reports "skipped")"##,
             native,
             batch
         ),
