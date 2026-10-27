@@ -1372,6 +1372,26 @@ mod tests {
         assert_eq!(h.state().ui.retouch_ai.tools.len(), TOOLS.len());
     }
 
+    #[test]
+    fn skin_smooth_brush_button_is_visible_with_a_document() {
+        let mut app = app();
+        app.run("file.new", json!({"width": 64, "height": 64})).expect("document");
+        app.ui.panels.retouch_ai = true;
+        let mut h = Harness::builder().with_size(vec2(900.0, 800.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let ctx = ui.ctx().clone();
+                if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                window(app, &ctx);
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(4);
+        assert!(h.query_all_by_label("Skin Smooth Brush").next().is_some(), "the brush action is offered in Skin & Face");
+    }
+
     /// The panel's data keys skip the literal scanner (the other complete catalogs fall back to
     /// English), so this test is what guarantees the Vietnamese catalog covers every new string.
     #[test]
