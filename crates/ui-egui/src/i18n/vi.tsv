@@ -3737,6 +3737,8 @@ curves	Smooth	Làm mượt
 	Local • CPU	Cục bộ • CPU
 	Analyze	Phân tích
 	Run Selected	Chạy đã chọn
+	Skin Smooth Brush	Cọ làm mềm da
+	Skin Smooth brush ready. Paint where the skin should look smoother.	Cọ làm mềm da đã sẵn sàng. Hãy tô lên vùng da cần mịn hơn.
 	Selection only	Chỉ trong vùng chọn
 	Paint a selection first (Lasso or Selection Brush); the tools run only inside it.	Hãy tạo vùng chọn trước (Lasso hoặc cọ chọn); công cụ chỉ chạy trong vùng đó.
 	Skin & Face	Da & Mặt
@@ -3795,6 +3797,7 @@ curves	Smooth	Làm mượt
 	Removes blemishes, spots and redness in the skin area while keeping texture.	Xóa mụn, vết thâm và đốm đỏ trong vùng da, giữ lại kết cấu.
 	Dodges and burns the skin to soften under-eye shadows and smile lines.	Làm sáng và tối vùng da để giảm bọng mắt và nếp cười.
 	Evens out the skin tone and reduces redness or color casts.	Làm đều tông da và giảm ửng đỏ hoặc ám màu.
+	Creates a soft-skin layer with a hidden mask, then selects the Brush. Paint white where the skin should look smoother.	Tạo lớp da mềm với mặt nạ ẩn, rồi chọn cọ. Tô màu trắng lên vùng da cần mịn hơn.
 	Reduces oily shine and blown highlights on the skin.	Giảm bóng nhờn và cháy sáng trên da.
 	Creates a copy of the layer with a skin mask; the pixels are unchanged.	Tạo bản sao của lớp với mask vùng da; pixel không thay đổi.
 	Adds depth and volume to the subject.	Tăng độ sâu và khối cho chủ thể.

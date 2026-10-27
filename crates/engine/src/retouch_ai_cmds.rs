@@ -33,6 +33,7 @@ use crate::{EngineError, Result, Session};
 
 const RUN: &str = "retouchAI.run";
 const ANALYZE: &str = "retouchAI.analyze";
+const SKIN_SMOOTH: &str = "retouchAI.skinSmooth";
 const FROM_FACE: &str = "layer.layerMask.fromFace";
 const DETECT_FACES: &str = "layer.layerMask.detectFaces";
 const MAX_TOOLS: usize = 14;
@@ -56,6 +57,7 @@ enum Tool {
     SkinTone,
     Mattifier,
     SkinMask,
+    SkinSmooth,
     PortraitVolumes,
     EyeBrilliance,
     EyeVessels,
@@ -96,6 +98,7 @@ impl Tool {
             Tool::SkinTone => "skinTone",
             Tool::Mattifier => "mattifier",
             Tool::SkinMask => "skinMask",
+            Tool::SkinSmooth => "skinSmooth",
             Tool::PortraitVolumes => "portraitVolumes",
             Tool::EyeBrilliance => "eyeBrilliance",
             Tool::EyeVessels => "eyeVessels",
@@ -115,6 +118,7 @@ impl Tool {
             Tool::SkinTone => "Skin Tone",
             Tool::Mattifier => "Mattifier",
             Tool::SkinMask => "Skin Mask",
+            Tool::SkinSmooth => "Skin Smooth",
             Tool::PortraitVolumes => "Portrait Volumes",
             Tool::EyeBrilliance => "Eye Brilliance",
             Tool::EyeVessels => "Eye Vessels",
@@ -1006,6 +1010,52 @@ where
     Outcome::Layer(layer)
 }
 
+/// A soft-skin copy with a hidden mask. The panel switches to the Brush with this mask targeted,
+/// so painting reveals the smoothing exactly where the user paints. Pixels outside the detected
+/// skin keep the source colour, so a stroke over non-skin has no visible effect.
+fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32) -> Outcome {
+    let Some(src) = ctx.source.surface() else {
+        return skipped("source layer has no pixels");
+    };
+    let bbox = ctx.analysis.skin.content_bounds().intersect(&ctx.source_bounds());
+    if bbox.is_empty() {
+        return skipped("no skin found");
+    }
+    let (w, h) = (bbox.width() as usize, bbox.height() as usize);
+    let native = src.read_region(bbox);
+    let ch = ctx.fmt.channels();
+    let rgba: Vec<[f32; 4]> = native.chunks_exact(ch).map(|p| to_rgba(&ctx.fmt, p)).collect();
+    let guide = RgbImage::from_rgba(&rgba, w, h);
+    let channels: [Vec<f32>; 3] = std::array::from_fn(|c| rgba.iter().map(|p| p[c]).collect());
+    let smooth: [Vec<f32>; 3] = std::array::from_fn(|c| matting::guided_filter_color(&guide, &channels[c], 6, 0.02));
+    let strength = (amount / 100.0).clamp(0.0, 1.0);
+    let mut out_rgba = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let p = rgba[i];
+            let coverage = ctx.analysis.skin.at(bbox.x0 + x as i32, bbox.y0 + y as i32).clamp(0.0, 1.0);
+            let k = strength * coverage;
+            let mut q = p;
+            if k > 0.0 {
+                for c in 0..3 {
+                    q[c] = (p[c] + (smooth[c][i] - p[c]) * k).clamp(0.0, 1.0);
+                }
+            }
+            out_rgba.push(q);
+        }
+    }
+    let mut layer = new_layer(&Tool::SkinSmooth.layer_name(), ctx.fmt);
+    let out = match crate::pixels_mut(&mut layer) {
+        Ok(s) => s,
+        Err(e) => return skipped(e.to_string()),
+    };
+    out.write_region(bbox, &native_from_rgba(&ctx.fmt, &out_rgba));
+    // Hidden until the user paints white on the mask.
+    layer.mask = Some(LayerMask::hide_all());
+    Outcome::Layer(layer)
+}
+
 fn skin_mask_layer(ctx: &Ctx<'_>) -> Outcome {
     let Some(src) = ctx.source.surface() else {
         return skipped("source layer has no pixels");
@@ -1535,6 +1585,7 @@ fn build_tool(ctx: &Ctx<'_>, tool: Tool, amount: f32, reference: Option<&LabStat
         Tool::SkinTone => skin_tone_layer(ctx, amount),
         Tool::Mattifier => mattifier_layer(ctx, amount),
         Tool::SkinMask => skin_mask_layer(ctx),
+        Tool::SkinSmooth => skin_smooth_layer(ctx, amount),
         Tool::PortraitVolumes => portrait_volumes(ctx, amount),
         Tool::EyeBrilliance => eye_brilliance_layer(ctx, amount),
         Tool::EyeVessels => eye_vessels_layer(ctx, amount),
@@ -1632,6 +1683,35 @@ fn run_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         "analysis": analysis_json(&analysis),
         "skipped": skipped_json,
     }))
+}
+
+/// Creates the soft-skin copy used by the panel's brush flow. The mask starts hidden; the UI
+/// selects the Brush with that mask targeted so painting reveals the smoothing.
+fn skin_smooth_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let amount = p.get("amount").and_then(Value::as_f64).map_or(65.0, |v| v as f32).clamp(0.0, 100.0);
+    if amount <= 0.0 {
+        return Err(bad(SKIN_SMOOTH, "`amount` must be greater than 0"));
+    }
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let source_id = source_layer_id(s, p, SKIN_SMOOTH)?;
+    let source = d.doc.layer(source_id).ok_or(EngineError::NoLayer(source_id))?;
+    if source.surface().is_none() {
+        return Err(EngineError::Other(format!("layer \"{}\" has no pixels to smooth", source.name)));
+    }
+    let analysis = analyze(&d.doc, Some(source_id), true)?;
+    let ctx = Ctx { doc: &d.doc, source, fmt: d.doc.pixel_format(), analysis: &analysis, selection: d.doc.selection.as_ref(), selection_only: false };
+    match skin_smooth_layer(&ctx, amount) {
+        Outcome::Layer(layer) => {
+            let name = layer.name.clone();
+            let id = s.edit("Skin Smooth Brush", |doc, active| {
+                let id = doc.insert_above(None, layer);
+                *active = Some(id);
+                Ok(id)
+            })?;
+            Ok(json!({"layer": id.0, "name": name}))
+        }
+        Outcome::Skipped(reason) => Err(EngineError::Other(reason)),
+    }
 }
 
 fn analyze_cmd(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1955,6 +2035,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r##"{"tools":[{"id":"heal|dodgeBurn|skinTone|mattifier|skinMask|portraitVolumes|eyeBrilliance|eyeVessels|teeth|cleanHair|fabricVolumes|dustClean|backgroundClean|colorMatch","amount":0..100=100},…] (1..14, unique),"layer":id? (default active layer),"sampleAllLayers":bool=true,"referencePath":str? (colorMatch only),"selectionOnly":bool=false} → {"layers":[{"tool","name","layer","blend":"normal","opacity":1.0}],"analysis":{"faces","skin","subject","eyes","mouth","regions":{"skin":[x,y,w,h],"subject":[x,y,w,h]}},"skipped":[{"tool","reason"}]}"##,
             enabled: has_doc,
             run: run_cmd,
+            journal: true,
+        },
+        CommandSpec {
+            id: SKIN_SMOOTH,
+            label: "Retouch AI: Skin Smooth Brush",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"layer":id? (pixel source; default active layer),"amount":0..100=65} → {"layer":id,"name":str} (creates a soft-skin copy with a hidden mask; paint on the mask to reveal it)"##,
+            enabled: has_doc,
+            run: skin_smooth_cmd,
             journal: true,
         },
         CommandSpec {
@@ -2337,6 +2427,26 @@ mod tests {
         assert!(!mask.surface.content_bounds().is_empty());
         assert!(mask.surface.content_bounds().width() <= expected.width());
         assert!(mask.surface.content_bounds().height() <= expected.height());
+    }
+
+    #[test]
+    fn skin_smooth_brush_creates_a_hidden_soft_skin_layer() {
+        let mut s = synthetic_session(SampleType::U8);
+        let source = s.active().unwrap().doc.layers[0].id;
+        let before = pixels_of(&s, source);
+        let r = s.execute(SKIN_SMOOTH, json!({"amount": 70})).unwrap();
+        let id = LayerId(r["layer"].as_u64().unwrap());
+        let d = s.active().unwrap();
+        let layer = d.doc.layer(id).expect("smooth layer");
+        let mask = layer.mask.as_ref().expect("smooth layer has a mask");
+        assert!(mask.value(96, 78) < 0.01, "the mask starts hidden for the brush");
+        let ch = d.doc.pixel_format().channels();
+        let at = (78 * 192 + 96) * ch;
+        let after = pixels_of(&s, id);
+        assert_ne!(&before[at..at + 3], &after[at..at + 3], "skin pixels are smoothed");
+        assert_eq!(before, pixels_of(&s, source), "the source pixels stay unchanged");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(s.active().unwrap().doc.layer(id).is_none(), "one undo removes the brush layer");
     }
 
     #[test]

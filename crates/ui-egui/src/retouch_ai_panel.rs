@@ -42,6 +42,8 @@ mod text {
     pub const OPEN_IMAGE_TO_START: &str = "Open an image to start";
     pub const ANALYZE: &str = "Analyze";
     pub const RUN_SELECTED: &str = "Run Selected";
+    pub const SKIN_SMOOTH_BRUSH: &str = "Skin Smooth Brush";
+    pub const SKIN_SMOOTH_READY: &str = "Skin Smooth brush ready. Paint where the skin should look smoother.";
     pub const SELECTION_ONLY: &str = "Selection only";
     pub const SELECTION_ONLY_HINT: &str = "Paint a selection first (Lasso or Selection Brush); the tools run only inside it.";
 
@@ -120,6 +122,7 @@ mod text {
     pub const HINT_HEAL: &str = "Removes blemishes, spots and redness in the skin area while keeping texture.";
     pub const HINT_DODGE_BURN: &str = "Dodges and burns the skin to soften under-eye shadows and smile lines.";
     pub const HINT_SKIN_TONE: &str = "Evens out the skin tone and reduces redness or color casts.";
+    pub const HINT_SKIN_SMOOTH: &str = "Creates a soft-skin layer with a hidden mask, then selects the Brush. Paint white where the skin should look smoother.";
     pub const HINT_MATTIFIER: &str = "Reduces oily shine and blown highlights on the skin.";
     pub const HINT_SKIN_MASK: &str = "Creates a copy of the layer with a skin mask; the pixels are unchanged.";
     pub const HINT_PORTRAIT_VOLUMES: &str = "Adds depth and volume to the subject.";
@@ -143,6 +146,8 @@ mod text {
         OPEN_IMAGE_TO_START,
         ANALYZE,
         RUN_SELECTED,
+        SKIN_SMOOTH_BRUSH,
+        SKIN_SMOOTH_READY,
         SELECTION_ONLY,
         SELECTION_ONLY_HINT,
         PRESET,
@@ -623,6 +628,7 @@ impl RetouchAiState {
 enum Action {
     Analyze,
     Run,
+    SkinSmoothBrush,
     SetOpacity { layer: u64, opacity: f32, gesture: u64 },
     SetVisible { layer: u64, visible: bool },
     PickReference,
@@ -742,6 +748,34 @@ fn analyze(app: &mut PhotocraftApp) {
     }
 }
 
+fn skin_smooth_brush_setup(app: &mut PhotocraftApp) {
+    crate::tool_memory::select(app, crate::state::Tool::Brush);
+    app.ui.mask_target = true;
+    app.ui.vector_mask_target = false;
+    app.sync_mask_targets();
+    if let Err(error) = app.run("tools.setColors", json!({"foreground": "#ffffff", "background": "#000000"})) {
+        set_status(&mut app.ui.retouch_ai, crate::i18n::fmt(tl!(text::LAYER_UPDATE_FAILED), &[("error", &error)]), true);
+    }
+}
+
+fn run_skin_smooth_brush(app: &mut PhotocraftApp) {
+    let Some(document) = app.session.active_index() else {
+        set_status(&mut app.ui.retouch_ai, tl!(text::OPEN_IMAGE_TO_START).into(), true);
+        return;
+    };
+    match app.run("retouchAI.skinSmooth", json!({"amount": 65})) {
+        Ok(value) => {
+            let layer = value.get("layer").and_then(Value::as_u64).unwrap_or(0);
+            let name = value.get("name").and_then(Value::as_str).unwrap_or("Retouch • Skin Smooth").to_string();
+            let result = json!({"layers": [{"tool": "skinSmooth", "name": name, "layer": layer, "blend": "normal", "opacity": 1.0}]});
+            store_results(&mut app.ui.retouch_ai, &result, Some(document));
+            skin_smooth_brush_setup(app);
+            set_status(&mut app.ui.retouch_ai, tl!(text::SKIN_SMOOTH_READY).into(), false);
+        }
+        Err(error) => set_status(&mut app.ui.retouch_ai, crate::i18n::fmt(tl!(text::RETOUCH_FAILED), &[("error", &error)]), true),
+    }
+}
+
 fn run_combo(app: &mut PhotocraftApp) {
     let Some(document) = app.session.active_index() else {
         set_status(&mut app.ui.retouch_ai, tl!(text::OPEN_IMAGE_TO_START).into(), true);
@@ -819,6 +853,7 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
     match action {
         Action::Analyze => analyze(app),
         Action::Run => run_combo(app),
+        Action::SkinSmoothBrush => run_skin_smooth_brush(app),
         Action::SetOpacity { layer, opacity, gesture } => {
             let params = json!({
                 "layer": layer,
@@ -1170,6 +1205,14 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     if group_header(ui, state, key, title) {
                         for spec in TOOLS.iter().filter(|spec| spec.group == index) {
                             tool_row(ui, state, spec.id);
+                        }
+                        if index == 0 {
+                            let brush =
+                                ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::SKIN_SMOOTH_BRUSH), ui.available_width())).inner;
+                            if brush.clicked() {
+                                actions.push(Action::SkinSmoothBrush);
+                            }
+                            brush.on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
                         }
                         if index == 2 {
                             reference_row(ui, state, &mut actions);
