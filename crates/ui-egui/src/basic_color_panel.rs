@@ -200,10 +200,10 @@ pub struct BasicColorState {
     /// The faces picked in the "Selected faces" mode, 1-based. Empty means every detected face.
     /// Persisted; stale numbers are pruned after a scan or a layer change.
     pub selected_faces: Vec<usize>,
-    /// The multi-face selection remembered for each document id while the app is open, so switching
-    /// images and back keeps it. Session-only: stale ids are not restored after a relaunch.
-    #[serde(skip)]
-    pub face_selections: HashMap<u64, Vec<usize>>,
+    /// The multi-face selection remembered for each image, keyed by [`face_selection_key`]: its path
+    /// for a saved document, so switching images and relaunching keeps it, or a session-only key for
+    /// an unsaved one.
+    pub face_selections: HashMap<String, Vec<usize>>,
     /// How many faces the last scan found (0: no scan yet). Transient.
     #[serde(skip)]
     pub face_choices: usize,
@@ -213,6 +213,14 @@ pub struct BasicColorState {
     /// The document/layer the face choices belong to. Transient.
     #[serde(skip)]
     pub face_scan_key: Option<(u64, LayerId)>,
+    /// The [`face_selection_key`] of the image whose selection is current, kept so the image being
+    /// left is remembered before the document/layer switch resets the face state. Transient.
+    #[serde(skip)]
+    pub face_doc_key: Option<String>,
+    /// The id of the image whose selection is current, so a Save As (the key changes, the image does
+    /// not) moves the selection to the new key instead of resetting it. Transient.
+    #[serde(skip)]
+    pub face_doc_id: Option<u64>,
     /// The running scan/apply job. Transient.
     #[serde(skip)]
     pub face_job: Option<JobId>,
@@ -237,6 +245,8 @@ impl Default for BasicColorState {
             face_choices: 0,
             face_boxes: Vec::new(),
             face_scan_key: None,
+            face_doc_key: None,
+            face_doc_id: None,
             face_job: None,
             face_job_layer: None,
             face_job_kind: FaceJobKind::default(),
@@ -392,21 +402,28 @@ fn prune_selected_faces(state: &mut BasicColorState) {
     state.selected_faces.dedup();
 }
 
-/// Remember the current multi-face selection for `doc` (empty: every detected face), so switching
-/// to another image and back keeps it while the app is open.
-fn remember_face_selection(state: &mut BasicColorState, doc: u64) {
-    state.face_selections.insert(doc, state.selected_faces.clone());
+/// The stable key a document's multi-face selection is remembered under: its path for a saved file,
+/// so the choice survives a relaunch, or an "untitled" key for an unsaved document, which can only
+/// live as long as the app (the id and name are stable while it is open).
+fn face_selection_key(st: &photocraft_engine::DocState) -> String {
+    st.path.clone().unwrap_or_else(|| format!("untitled:{}:{}", st.doc.id.0, st.doc.name))
 }
 
-/// The multi-face selection remembered for `doc`; an empty list means every detected face.
-fn recalled_face_selection(state: &BasicColorState, doc: u64) -> Vec<usize> {
-    state.face_selections.get(&doc).cloned().unwrap_or_default()
+/// Remember the live multi-face selection under the active image's key.
+fn remember_current_face_selection(app: &mut PhotocraftApp) {
+    let Some(key) = app.session.active().map(face_selection_key) else { return };
+    remember_face_selection(&mut app.ui.basic_color, &key);
 }
 
-/// The document whose face selection is current: the scan key's document, so a result that arrives
-/// for a layer still updates the right image.
-fn face_selection_doc(state: &BasicColorState) -> Option<u64> {
-    state.face_scan_key.map(|(doc, _)| doc)
+/// Remember the current multi-face selection for the image keyed `key` (empty: every detected face),
+/// so switching to another image and back keeps it — and a saved image keeps it across a relaunch.
+fn remember_face_selection(state: &mut BasicColorState, key: &str) {
+    state.face_selections.insert(key.to_string(), state.selected_faces.clone());
+}
+
+/// The multi-face selection remembered for the image keyed `key`; empty means every detected face.
+fn recalled_face_selection(state: &BasicColorState, key: &str) -> Vec<usize> {
+    state.face_selections.get(key).cloned().unwrap_or_default()
 }
 
 /// The digit of a face key: 0 is "all faces", 1–9 are the numbered boxes.
@@ -452,9 +469,7 @@ fn press_face_key(app: &mut PhotocraftApp, digit: u8) {
             set_status(&mut app.ui.basic_color, message, false);
         }
     }
-    if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
-        remember_face_selection(&mut app.ui.basic_color, doc);
-    }
+    remember_current_face_selection(app);
 }
 
 /// Alt+1…9 picks or toggles a numbered face and Alt+0 selects every face, while the panel shows the
@@ -514,9 +529,7 @@ fn finish_face_result(app: &mut PhotocraftApp, kind: FaceJobKind, layer: LayerId
         .unwrap_or_default();
     app.ui.basic_color.face_scan_key = app.session.active().map(|st| (st.doc.id.0, layer));
     prune_selected_faces(&mut app.ui.basic_color);
-    if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
-        remember_face_selection(&mut app.ui.basic_color, doc);
-    }
+    remember_current_face_selection(app);
     if kind == FaceJobKind::Apply {
         let count = faces.to_string();
         let message = crate::i18n::fmt(tl!(text::FACE_STATUS), &[("faces", &count)]);
@@ -537,9 +550,7 @@ fn finish_face_error(app: &mut PhotocraftApp, error: String) {
         app.ui.basic_color.face_choices = 0;
         app.ui.basic_color.face_boxes.clear();
         prune_selected_faces(&mut app.ui.basic_color);
-        if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
-            remember_face_selection(&mut app.ui.basic_color, doc);
-        }
+        remember_current_face_selection(app);
     }
     if error.contains("no face found") || error.contains("not found") {
         set_status(&mut app.ui.basic_color, tl!(text::NO_FACE).to_string(), true);
@@ -869,9 +880,7 @@ pub(crate) fn draw_face_boxes(app: &mut PhotocraftApp, ui: &egui::Ui, painter: &
             let message = crate::i18n::fmt(tl!(text::FACE_BOX_SELECTED), &[("n", &n.to_string())]);
             set_status(&mut app.ui.basic_color, message, false);
         }
-        if let Some(doc) = app.session.active().map(|st| st.doc.id.0) {
-            remember_face_selection(&mut app.ui.basic_color, doc);
-        }
+        remember_current_face_selection(app);
     }
 }
 
@@ -883,17 +892,31 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     poll_face_job(app);
     let has_document = app.session.active_index().is_some();
     let active = active_basic_color(app);
+    let doc_key = app.session.active().map(face_selection_key);
+    let doc_id = app.session.active().map(|st| st.doc.id.0);
+    if app.ui.basic_color.face_doc_key != doc_key && !app.ui.basic_color.face_busy {
+        // A key change for the same image is a Save As: carry the live selection to the new key
+        // instead of restoring (and so resetting) it.
+        let same_doc = doc_id.is_some() && app.ui.basic_color.face_doc_id == doc_id;
+        if let Some(previous) = app.ui.basic_color.face_doc_key.clone() {
+            remember_face_selection(&mut app.ui.basic_color, &previous);
+        }
+        if !same_doc {
+            // Bring back the selection of the image being switched to (empty: every detected
+            // face). A saved image's key is its path, so its selection also comes back after a
+            // relaunch.
+            let restored = doc_key.as_deref().map_or_else(Vec::new, |key| recalled_face_selection(&app.ui.basic_color, key));
+            app.ui.basic_color.selected_faces = restored;
+        }
+        app.ui.basic_color.face_doc_key = doc_key;
+        app.ui.basic_color.face_doc_id = doc_id;
+    }
     if let Some(info) = &active {
         let key = app.session.active().map(|st| (st.doc.id.0, info.id));
         if app.ui.basic_color.face_scan_key != key && !app.ui.basic_color.face_busy {
-            // Remember the image being left before the face state resets, then bring back the
-            // selection of the image being switched to (empty: every detected face).
-            if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
-                remember_face_selection(&mut app.ui.basic_color, doc);
-            }
+            // A document or layer switch invalidates the face boxes and the scanned choices.
             app.ui.basic_color.face_choices = 0;
             app.ui.basic_color.face_boxes.clear();
-            app.ui.basic_color.selected_faces = key.map_or_else(Vec::new, |(doc, _)| recalled_face_selection(&app.ui.basic_color, doc));
             let choice = app.ui.basic_color.face_choice;
             app.ui.basic_color.face_choice = if choice == 1 || choice == MULTI_FACE { choice } else { 0 };
             app.ui.basic_color.face_scan_key = key;
@@ -1022,9 +1045,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     app.ui.basic_color.selected_faces = selected_faces;
     app.ui.basic_color.face_boxes_visible = face_boxes_visible;
     // A checkbox toggle or a shortcut changed the selection this frame: keep the image's map in step.
-    if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
-        remember_face_selection(&mut app.ui.basic_color, doc);
-    }
+    remember_current_face_selection(app);
     for action in actions {
         apply(app, action);
     }
@@ -1646,23 +1667,23 @@ mod tests {
         assert_eq!(white_balance, "Cân bằng trắng");
     }
 
-    /// The multi-face selection is remembered per image while the app is open: switching documents
-    /// keeps each image's own selection, and coming back restores it.
+    /// The multi-face selection is remembered per image: switching documents keeps each image's own
+    /// selection, and coming back restores it.
     #[test]
     fn face_selection_is_remembered_per_document() {
         let mut session = photocraft_engine::Session::new();
         session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("first document");
         session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
-        let first = session.active().expect("first document").doc.id.0;
+        let first = face_selection_key(session.active().expect("first document"));
         session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("second document");
         session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
-        let second = session.active().expect("second document").doc.id.0;
+        let second = face_selection_key(session.active().expect("second document"));
         assert_ne!(first, second);
         session.execute("document.activate", json!({"document": 0})).expect("first document active");
         let mut app = PhotocraftApp::new(session, crate::Services::default());
         app.ui.panels.basic_color = true;
         let mut h = panel_harness(app, vec2(1440.0, 900.0));
-        assert_eq!(h.state().ui.basic_color.face_scan_key.map(|k| k.0), Some(first), "the panel keyed the first document");
+        assert_eq!(h.state().ui.basic_color.face_doc_key.as_deref(), Some(first.as_str()), "the panel keyed the first image");
         // Two scanned faces on the first image, with face 1 unchecked.
         h.state_mut().ui.basic_color.face_choices = 2;
         h.state_mut().ui.basic_color.face_boxes = vec![[8, 8, 20, 20], [36, 36, 20, 20]];
@@ -1674,10 +1695,61 @@ mod tests {
         h.run_steps(2);
         assert!(h.state().ui.basic_color.selected_faces.is_empty(), "a new image starts with all faces");
         assert_eq!(h.state().ui.basic_color.face_selections.get(&first), Some(&vec![2]), "the first image keeps its choice");
+        assert_eq!(h.state().ui.basic_color.face_doc_key.as_deref(), Some(second.as_str()), "the panel keyed the second image");
         // Back to the first image: its selection comes back.
         h.state_mut().run("document.activate", json!({"document": 0})).expect("first document active");
         h.run_steps(2);
         assert_eq!(h.state().ui.basic_color.selected_faces, vec![2], "the first image's selection is restored");
+    }
+
+    /// A saved document is keyed by its path, so its selection can come back after a relaunch; an
+    /// unsaved one gets a session-only key.
+    #[test]
+    fn a_saved_document_is_keyed_by_its_path() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("new document");
+        let st = session.active().expect("document");
+        let id = st.doc.id.0;
+        let name = st.doc.name.clone();
+        assert_eq!(face_selection_key(st), format!("untitled:{id}:{name}"), "an unsaved document gets a session-only key");
+        session.active_mut().expect("document").path = Some("/photos/a.jpg".into());
+        assert_eq!(face_selection_key(session.active().expect("document")), "/photos/a.jpg", "a saved document is keyed by its path");
+    }
+
+    /// Saving an unsaved image moves its selection to the path key instead of resetting it.
+    #[test]
+    fn saving_an_unsaved_image_keeps_its_face_selection() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("new document");
+        session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.ui.panels.basic_color = true;
+        let mut h = panel_harness(app, vec2(1440.0, 900.0));
+        h.state_mut().ui.basic_color.face_choices = 2;
+        h.state_mut().ui.basic_color.face_boxes = vec![[8, 8, 20, 20], [36, 36, 20, 20]];
+        h.state_mut().ui.basic_color.selected_faces = vec![2];
+        h.run_steps(2);
+        h.state_mut().session.active_mut().expect("document").path = Some("/photos/a.jpg".into());
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.selected_faces, vec![2], "the saved image keeps its selection");
+        assert_eq!(h.state().ui.basic_color.face_doc_key.as_deref(), Some("/photos/a.jpg"), "the key follows the saved path");
+        assert_eq!(h.state().ui.basic_color.face_selections.get("/photos/a.jpg"), Some(&vec![2]), "the selection is remembered under the path");
+    }
+
+    /// The per-image map is persisted, and an older layout without it still loads.
+    #[test]
+    fn face_selections_survive_serde_and_old_layouts_default() {
+        let mut state = BasicColorState::default();
+        state.face_selections.insert("/photos/a.jpg".into(), vec![2]);
+        state.face_selections.insert("untitled:1:Untitled-1".into(), Vec::new());
+        let back: BasicColorState = serde_json::from_str(&serde_json::to_string(&state).expect("serialize")).expect("deserialize");
+        assert_eq!(back.face_selections, state.face_selections, "the per-image map round-trips");
+        assert_eq!(back.face_selections.get("/photos/a.jpg"), Some(&vec![2]));
+        // An older layout without the field deserializes with an empty map.
+        let old: BasicColorState = serde_json::from_str(r#"{"faceChoice":1,"selectedFaces":[2]}"#).expect("old layout");
+        assert!(old.face_selections.is_empty(), "a missing map defaults to empty");
+        assert_eq!(old.face_choice, 1);
+        assert_eq!(old.selected_faces, vec![2]);
     }
 
     /// Alt+1…9 pick or toggle a numbered face, and Alt+0 goes back to every face.
@@ -1754,12 +1826,13 @@ mod tests {
         session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("new document");
         session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
         let doc = session.active().expect("document").doc.id.0;
+        let key = face_selection_key(session.active().expect("document"));
         let layer = session.active().and_then(|st| st.active_layer).expect("active layer");
         let mut app = PhotocraftApp::new(session, crate::Services::default());
         app.ui.basic_color.face_scan_key = Some((doc, layer));
         app.ui.basic_color.selected_faces = vec![2, 3];
         finish_face_result(&mut app, FaceJobKind::Scan, layer, json!({"faces": 2, "boxes": [[0, 0, 10, 10], [20, 20, 10, 10]]}));
         assert_eq!(app.ui.basic_color.selected_faces, vec![2], "face 3 no longer exists");
-        assert_eq!(app.ui.basic_color.face_selections.get(&doc), Some(&vec![2]), "the image's map is pruned too");
+        assert_eq!(app.ui.basic_color.face_selections.get(&key), Some(&vec![2]), "the image's map is pruned too");
     }
 }
