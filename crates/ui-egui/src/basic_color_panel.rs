@@ -73,7 +73,9 @@ pub(crate) mod text {
     pub const FACE_COVERAGE: &str = "Area";
     pub const ALL_FACES: &str = "All faces";
     pub const MAIN_FACE: &str = "Main face";
+    pub const SELECTED_FACES: &str = "Selected faces";
     pub const FACE_NUMBER: &str = "Face {n}";
+    pub const FACE_BOXES: &str = "Face boxes";
     pub const FACE_ONLY: &str = "Face only";
     pub const FACE_NECK: &str = "Face + neck + chest";
     pub const DETECTING_FACE: &str = "Detecting face…";
@@ -81,6 +83,8 @@ pub(crate) mod text {
     pub const FACES_FOUND: &str = "Found {faces} faces.";
     pub const FACE_CANCELLED: &str = "Face detection cancelled.";
     pub const FACE_BOX_SELECTED: &str = "Selected face {n}.";
+    pub const FACE_SELECTION_STATUS: &str = "Selected faces: {list}.";
+    pub const ALL_FACES_SELECTED: &str = "All faces selected.";
     pub const APPLY_WHOLE: &str = "Apply to whole image";
     pub const SHOW_SELECTION: &str = "Show selection";
     pub const HIDE_SELECTION: &str = "Hide selection";
@@ -121,7 +125,9 @@ pub(crate) mod text {
         FACE_COVERAGE,
         ALL_FACES,
         MAIN_FACE,
+        SELECTED_FACES,
         FACE_NUMBER,
+        FACE_BOXES,
         FACE_ONLY,
         FACE_NECK,
         DETECTING_FACE,
@@ -129,6 +135,8 @@ pub(crate) mod text {
         FACES_FOUND,
         FACE_CANCELLED,
         FACE_BOX_SELECTED,
+        FACE_SELECTION_STATUS,
+        ALL_FACES_SELECTED,
         APPLY_WHOLE,
         SHOW_SELECTION,
         HIDE_SELECTION,
@@ -171,17 +179,23 @@ pub enum FaceJobKind {
     Apply,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BasicColorState {
     /// The last command error shown under the controls (empty: none).
     pub status: String,
     pub status_error: bool,
-    /// Which face the next Auto-select run covers: 0 = all, 1 = main, n+1 = face n.
-    /// Persisted; a stale face number falls back to all when the layer changes.
+    /// Which face the next Auto-select run covers: 0 = all, 1 = main, [`MULTI_FACE`] = the faces
+    /// in [`Self::selected_faces`], n+1 = face n. Persisted; a stale face number falls back to all
+    /// when the layer changes.
     pub face_choice: usize,
     /// Face-only or face + neck + upper chest. Persisted.
     pub face_coverage: FaceCoverage,
+    /// Show the numbered face boxes over the canvas. Persisted; on by default.
+    pub face_boxes_visible: bool,
+    /// The faces picked in the "Selected faces" mode, 1-based. Empty means every detected face.
+    /// Persisted; stale numbers are pruned after a scan or a layer change.
+    pub selected_faces: Vec<usize>,
     /// How many faces the last scan found (0: no scan yet). Transient.
     #[serde(skip)]
     pub face_choices: usize,
@@ -201,6 +215,29 @@ pub struct BasicColorState {
     #[serde(skip)]
     pub face_busy: bool,
 }
+
+impl Default for BasicColorState {
+    fn default() -> Self {
+        Self {
+            status: String::new(),
+            status_error: false,
+            face_choice: 0,
+            face_coverage: FaceCoverage::default(),
+            face_boxes_visible: true,
+            selected_faces: Vec::new(),
+            face_choices: 0,
+            face_boxes: Vec::new(),
+            face_scan_key: None,
+            face_job: None,
+            face_job_layer: None,
+            face_job_kind: FaceJobKind::default(),
+            face_busy: false,
+        }
+    }
+}
+
+/// The face-mode dropdown value for "Selected faces": a sentinel outside the 0/1/n+1 numbering.
+pub(crate) const MULTI_FACE: usize = usize::MAX;
 
 /// The active layer when it is a Basic Color adjustment: everything the panel needs, copied out so
 /// the engine calls and the shared editor don't hold a borrow of the session.
@@ -239,6 +276,7 @@ enum Action {
     AddToRegion { layer: LayerId },
     AutoFace { layer: LayerId, choice: usize, coverage: FaceCoverage },
     ScanFaces { layer: LayerId },
+    FaceSelectionChanged,
     CancelFaceJob { id: JobId },
     ApplyWhole { layer: LayerId },
     ToggleMask { layer: LayerId },
@@ -287,6 +325,64 @@ fn engine_face_choice(choice: usize) -> String {
     }
 }
 
+/// The `faces` value for `layer.layerMask.fromFace`. Multi mode sends the 1-based selection; an
+/// empty selection means every detected face (and `"all"` when no scan has run yet).
+fn engine_faces_value(choice: usize, selected: &[usize], face_choices: usize) -> serde_json::Value {
+    if choice != MULTI_FACE {
+        return json!(engine_face_choice(choice));
+    }
+    let mut faces: Vec<usize> =
+        if selected.is_empty() { (1..=face_choices).collect() } else { selected.iter().copied().filter(|n| *n >= 1 && *n <= face_choices).collect() };
+    faces.sort_unstable();
+    faces.dedup();
+    if faces.is_empty() { json!("all") } else { json!(faces) }
+}
+
+/// Whether face `n` is part of the multi-face selection: an empty selection is every detected face.
+fn face_in_multi(selected: &[usize], n: usize) -> bool {
+    selected.is_empty() || selected.contains(&n)
+}
+
+/// Add or remove one face from the multi-face selection. An empty selection first means "every
+/// detected face", so toggling a box off materialises the others.
+fn toggle_selected_face(selected: &mut Vec<usize>, n: usize, faces: usize) {
+    if selected.is_empty() {
+        selected.extend(1..=faces.max(n));
+    }
+    if let Some(pos) = selected.iter().position(|x| *x == n) {
+        selected.remove(pos);
+    } else {
+        selected.push(n);
+    }
+    selected.sort_unstable();
+    selected.dedup();
+}
+
+/// The status line for the current multi-face selection: an empty selection means every face.
+fn face_selection_status(selected: &[usize]) -> String {
+    if selected.is_empty() {
+        tl!(text::ALL_FACES_SELECTED).to_string()
+    } else {
+        let list = selected.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
+        crate::i18n::fmt(tl!(text::FACE_SELECTION_STATUS), &[("list", &list)])
+    }
+}
+
+/// Toggle a face from the canvas box and report it in the status line.
+fn toggle_multi_face(state: &mut BasicColorState, n: usize, faces: usize) {
+    toggle_selected_face(&mut state.selected_faces, n, faces);
+    let message = face_selection_status(&state.selected_faces);
+    set_status(state, message, false);
+}
+
+/// Drop face numbers the current scan no longer has.
+fn prune_selected_faces(state: &mut BasicColorState) {
+    let faces = state.face_choices;
+    state.selected_faces.retain(|n| *n >= 1 && *n <= faces);
+    state.selected_faces.sort_unstable();
+    state.selected_faces.dedup();
+}
+
 fn clear_face_job(app: &mut PhotocraftApp) {
     app.ui.basic_color.face_job = None;
     app.ui.basic_color.face_job_layer = None;
@@ -310,6 +406,7 @@ fn finish_face_result(app: &mut PhotocraftApp, kind: FaceJobKind, layer: LayerId
         })
         .unwrap_or_default();
     app.ui.basic_color.face_scan_key = app.session.active().map(|st| (st.doc.id.0, layer));
+    prune_selected_faces(&mut app.ui.basic_color);
     if kind == FaceJobKind::Apply {
         let count = faces.to_string();
         let message = crate::i18n::fmt(tl!(text::FACE_STATUS), &[("faces", &count)]);
@@ -329,6 +426,7 @@ fn finish_face_error(app: &mut PhotocraftApp, error: String) {
     if app.ui.basic_color.face_job_kind == FaceJobKind::Scan {
         app.ui.basic_color.face_choices = 0;
         app.ui.basic_color.face_boxes.clear();
+        prune_selected_faces(&mut app.ui.basic_color);
     }
     if error.contains("no face found") || error.contains("not found") {
         set_status(&mut app.ui.basic_color, tl!(text::NO_FACE).to_string(), true);
@@ -345,7 +443,8 @@ fn start_face_job(app: &mut PhotocraftApp, layer: LayerId, kind: FaceJobKind, ch
     let (command, params, status) = match kind {
         FaceJobKind::Scan => ("layer.layerMask.detectFaces", json!({"layer": layer.0}), text::SCANNING_FACES),
         FaceJobKind::Apply => {
-            ("layer.layerMask.fromFace", json!({"layer": layer.0, "faces": engine_face_choice(choice), "coverage": coverage.as_str()}), text::DETECTING_FACE)
+            let faces = engine_faces_value(choice, &app.ui.basic_color.selected_faces, app.ui.basic_color.face_choices);
+            ("layer.layerMask.fromFace", json!({"layer": layer.0, "faces": faces, "coverage": coverage.as_str()}), text::DETECTING_FACE)
         }
     };
     app.ui.basic_color.face_busy = true;
@@ -419,6 +518,10 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
         }
         Action::AutoFace { layer, choice, coverage } => start_face_job(app, layer, FaceJobKind::Apply, choice, coverage),
         Action::ScanFaces { layer } => start_face_job(app, layer, FaceJobKind::Scan, 0, FaceCoverage::FaceNeck),
+        Action::FaceSelectionChanged => {
+            let message = face_selection_status(&app.ui.basic_color.selected_faces);
+            set_status(&mut app.ui.basic_color, message, false);
+        }
         Action::CancelFaceJob { id } => {
             app.session.cancel_job(id);
             set_status(&mut app.ui.basic_color, tl!(text::FACE_CANCELLED).to_string(), false);
@@ -445,6 +548,7 @@ fn face_row(
     info: &ActiveBasic,
     choice: &mut usize,
     face_choices: usize,
+    selected: &mut Vec<usize>,
     coverage: &mut FaceCoverage,
     job: Option<&JobInfo>,
     with_apply: bool,
@@ -474,14 +578,29 @@ fn face_row(
             actions.push(Action::ScanFaces { layer: info.id });
         }
     });
-    if *choice >= face_choices + 2 {
+    if *choice != MULTI_FACE && *choice >= face_choices + 2 {
         *choice = 0;
     }
-    let mut labels = vec![tl!(text::ALL_FACES).to_string(), tl!(text::MAIN_FACE).to_string()];
+    let mut labels = vec![tl!(text::ALL_FACES).to_string(), tl!(text::MAIN_FACE).to_string(), tl!(text::SELECTED_FACES).to_string()];
     for n in 1..=face_choices {
         labels.push(crate::i18n::fmt(tl!(text::FACE_NUMBER), &[("n", &n.to_string())]));
     }
-    let options: Vec<(usize, &str)> = labels.iter().enumerate().map(|(i, s)| (i, s.as_str())).collect();
+    let options: Vec<(usize, &str)> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            (
+                if i < 2 {
+                    i
+                } else if i == 2 {
+                    MULTI_FACE
+                } else {
+                    i - 1
+                },
+                s.as_str(),
+            )
+        })
+        .collect();
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(tl!(text::FACE_MODE)).size(10.5).color(t.text_faint));
         widgets::dropdown_literal(ui, "basic-color-face-choice", choice, &options, 108.0);
@@ -494,25 +613,67 @@ fn face_row(
             142.0,
         );
     });
+    if *choice == MULTI_FACE && face_choices > 0 {
+        let mut changed = false;
+        ui.horizontal_wrapped(|ui| {
+            for n in 1..=face_choices {
+                let mut on = face_in_multi(selected, n);
+                if widgets::checkbox(ui, &mut on, &n.to_string()).changed() {
+                    toggle_selected_face(selected, n, face_choices);
+                    changed = true;
+                }
+            }
+        });
+        if changed {
+            actions.push(Action::FaceSelectionChanged);
+        }
+    }
 }
 
+/// A compact checkbox for the Mask header row: a 12-point box and a 10.5-point label, so the row
+/// keeps the height of the Mask title and the 1440×900 body does not start scrolling.
+fn compact_checkbox(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let l = ui
+        .add(egui::Label::new(egui::RichText::new(tl!(label)).size(10.5).color(t.text_dim)).selectable(false).sense(Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let (rect, resp) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let pressed = resp.is_pointer_button_down_on() || l.is_pointer_button_down_on();
+    widgets::check_box(ui.painter(), rect, *on, resp.hovered() || l.hovered(), pressed, &t);
+    let mut resp = resp.union(l);
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    resp
+}
+
+#[allow(clippy::too_many_arguments)]
 fn mask_controls(
     ui: &mut egui::Ui,
     info: &ActiveBasic,
     choice: &mut usize,
     face_choices: usize,
+    selected: &mut Vec<usize>,
     coverage: &mut FaceCoverage,
+    boxes_visible: &mut bool,
     job: Option<&JobInfo>,
     actions: &mut Vec<Action>,
 ) {
     let t = Tokens::get(ui.ctx());
     widgets::hairline(ui);
     ui.add_space(2.0);
-    ui.label(egui::RichText::new(tl!(text::MASK)).font(theme::semibold(12.0)).color(t.text));
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 15.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.label(egui::RichText::new(tl!(text::MASK)).font(theme::semibold(12.0)).color(t.text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            compact_checkbox(ui, boxes_visible, text::FACE_BOXES);
+        });
+    });
     if !info.has_mask {
         // Vector mask only, or none: painting needs a pixel mask, so the paint controls wait.
         ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_PIXEL_MASK)).size(11.0).color(t.text_faint)).wrap());
-        face_row(ui, info, choice, face_choices, coverage, job, true, actions);
+        face_row(ui, info, choice, face_choices, selected, coverage, job, true, actions);
         return;
     }
     ui.horizontal_wrapped(|ui| {
@@ -532,7 +693,7 @@ fn mask_controls(
             actions.push(Action::ToggleMask { layer: info.id });
         }
     });
-    face_row(ui, info, choice, face_choices, coverage, job, false, actions);
+    face_row(ui, info, choice, face_choices, selected, coverage, job, false, actions);
     let hint = if info.overlay { tl!(text::SELECTION_HINT) } else { tl!(text::HINT) };
     ui.add(egui::Label::new(egui::RichText::new(hint).size(10.5).color(t.text_faint)).wrap());
 }
@@ -541,13 +702,15 @@ fn mask_controls(
 /// boxes are view-only and follow the current zoom, pan, rotation and flip. This runs in the
 /// canvas pass, below the floating panel, so panel controls stay clickable.
 pub(crate) fn draw_face_boxes(app: &mut PhotocraftApp, ui: &egui::Ui, painter: &egui::Painter, xf: &crate::canvas::ViewXform) {
-    if app.ui.basic_color.face_boxes.is_empty() || app.ui.basic_color.face_busy || active_basic_color(app).is_none() {
+    if !app.ui.basic_color.face_boxes_visible || app.ui.basic_color.face_boxes.is_empty() || app.ui.basic_color.face_busy || active_basic_color(app).is_none() {
         return;
     }
     let boxes = app.ui.basic_color.face_boxes.clone();
     let choice = app.ui.basic_color.face_choice;
+    let multi = choice == MULTI_FACE;
+    let selected_faces = app.ui.basic_color.selected_faces.clone();
     let main = boxes.iter().enumerate().max_by_key(|(_, b)| i64::from(b[2].max(0)) * i64::from(b[3].max(0))).map(|(i, _)| i);
-    let mut chosen = None;
+    let mut clicked_face = None;
     for (i, b) in boxes.iter().enumerate() {
         let [x, y, w, h] = *b;
         let pts = [
@@ -560,7 +723,7 @@ pub(crate) fn draw_face_boxes(app: &mut PhotocraftApp, ui: &egui::Ui, painter: &
         if !ui.clip_rect().intersects(rect) {
             continue;
         }
-        let selected = choice == i + 2 || (choice == 1 && main == Some(i));
+        let selected = if multi { face_in_multi(&selected_faces, i + 1) } else { choice == i + 2 || (choice == 1 && main == Some(i)) };
         let stroke = if selected { Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 90)) } else { Stroke::new(1.2, egui::Color32::WHITE) };
         if selected {
             painter.add(egui::Shape::convex_polygon(pts.to_vec(), egui::Color32::from_rgba_unmultiplied(255, 210, 90, 35), Stroke::NONE));
@@ -580,14 +743,18 @@ pub(crate) fn draw_face_boxes(app: &mut PhotocraftApp, ui: &egui::Ui, painter: &
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if resp.clicked() {
-            chosen = Some(i + 1);
+            clicked_face = Some(i + 1);
         }
         resp.on_hover_text(crate::i18n::fmt(tl!(text::FACE_NUMBER), &[("n", &(i + 1).to_string())]));
     }
-    if let Some(n) = chosen {
-        app.ui.basic_color.face_choice = n + 1;
-        let message = crate::i18n::fmt(tl!(text::FACE_BOX_SELECTED), &[("n", &n.to_string())]);
-        set_status(&mut app.ui.basic_color, message, false);
+    if let Some(n) = clicked_face {
+        if multi {
+            toggle_multi_face(&mut app.ui.basic_color, n, boxes.len());
+        } else {
+            app.ui.basic_color.face_choice = n + 1;
+            let message = crate::i18n::fmt(tl!(text::FACE_BOX_SELECTED), &[("n", &n.to_string())]);
+            set_status(&mut app.ui.basic_color, message, false);
+        }
     }
 }
 
@@ -604,12 +771,16 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if app.ui.basic_color.face_scan_key != key && !app.ui.basic_color.face_busy {
             app.ui.basic_color.face_choices = 0;
             app.ui.basic_color.face_boxes.clear();
-            app.ui.basic_color.face_choice = if app.ui.basic_color.face_choice == 1 { 1 } else { 0 };
+            app.ui.basic_color.selected_faces.clear();
+            let choice = app.ui.basic_color.face_choice;
+            app.ui.basic_color.face_choice = if choice == 1 || choice == MULTI_FACE { choice } else { 0 };
             app.ui.basic_color.face_scan_key = key;
         }
     }
     let mut face_choice = app.ui.basic_color.face_choice;
     let face_choices = app.ui.basic_color.face_choices;
+    let mut selected_faces = app.ui.basic_color.selected_faces.clone();
+    let mut face_boxes_visible = app.ui.basic_color.face_boxes_visible;
     let mut face_coverage = app.ui.basic_color.face_coverage;
     let face_job = app.ui.basic_color.face_job.and_then(|id| app.session.jobs_with_recent().into_iter().find(|j| j.id == id && j.state == "running"));
     let mut open = true;
@@ -683,7 +854,17 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                                 }
                             });
                         });
-                        mask_controls(ui, info, &mut face_choice, face_choices, &mut face_coverage, face_job.as_ref(), &mut actions);
+                        mask_controls(
+                            ui,
+                            info,
+                            &mut face_choice,
+                            face_choices,
+                            &mut selected_faces,
+                            &mut face_coverage,
+                            &mut face_boxes_visible,
+                            face_job.as_ref(),
+                            &mut actions,
+                        );
                         ui.add_space(4.0);
                         crate::adjust_editors::layer_editor(app, ui, info.id, &info.adjustment);
                     }
@@ -713,6 +894,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     app.ui.basic_color.face_choice = face_choice;
     app.ui.basic_color.face_coverage = face_coverage;
+    app.ui.basic_color.selected_faces = selected_faces;
+    app.ui.basic_color.face_boxes_visible = face_boxes_visible;
     for action in actions {
         apply(app, action);
     }
@@ -925,12 +1108,106 @@ mod tests {
         assert_eq!(h.state().ui.basic_color.face_choice, 2, "the first face maps to choice index 2");
     }
 
+    /// A canvas with two numbered face boxes, for the box-click tests.
+    fn face_box_harness(choice: usize, selected: Vec<usize>) -> egui_kittest::Harness<'static, PhotocraftApp> {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("new document");
+        session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.last_canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(600.0, 500.0));
+        app.ui.views = vec![crate::state::View { zoom: 1.0, center: [32.0, 32.0], fit_pending: false, fill_pending: false, doc_size: [64, 64], rotation: 0.0 }];
+        app.ui.basic_color.face_choices = 2;
+        app.ui.basic_color.face_boxes = vec![[8, 8, 20, 20], [36, 36, 20, 20]];
+        app.ui.basic_color.face_choice = choice;
+        app.ui.basic_color.selected_faces = selected;
+        let mut h = Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                if let Some(xf) = crate::canvas::ViewXform::active(app) {
+                    let painter = ui.painter().clone();
+                    draw_face_boxes(app, ui, &painter, &xf);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(2);
+        h
+    }
+
+    fn click_doc_point(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, x: f32, y: f32) {
+        let xf = crate::canvas::ViewXform::active(h.state()).expect("the canvas has a view");
+        let p = xf.to_screen(x, y);
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+    }
+
+    #[test]
+    fn multi_mode_box_clicks_toggle_faces_and_keep_the_mode() {
+        let mut h = face_box_harness(MULTI_FACE, Vec::new());
+        click_doc_point(&mut h, 18.0, 18.0);
+        assert_eq!(h.state().ui.basic_color.face_choice, MULTI_FACE, "a box click stays in multi mode");
+        assert_eq!(h.state().ui.basic_color.selected_faces, vec![2], "the empty default (all) minus face 1");
+        assert!(h.state().ui.basic_color.status.contains("2"));
+        click_doc_point(&mut h, 46.0, 46.0);
+        assert!(h.state().ui.basic_color.selected_faces.is_empty(), "removing the last explicit face returns to all faces");
+        let status = &h.state().ui.basic_color.status;
+        assert!(status == text::ALL_FACES_SELECTED || status == "Đã chọn tất cả khuôn mặt.", "{status}");
+        click_doc_point(&mut h, 18.0, 18.0);
+        assert_eq!(h.state().ui.basic_color.selected_faces, vec![2], "all faces minus face 1 again");
+    }
+
+    #[test]
+    fn hidden_face_boxes_do_not_respond_to_clicks() {
+        let mut h = face_box_harness(0, Vec::new());
+        h.state_mut().ui.basic_color.face_boxes_visible = false;
+        click_doc_point(&mut h, 18.0, 18.0);
+        assert_eq!(h.state().ui.basic_color.face_choice, 0, "hidden boxes keep the single-face choice");
+        assert!(h.state().ui.basic_color.selected_faces.is_empty());
+
+        h.state_mut().ui.basic_color.face_choice = MULTI_FACE;
+        click_doc_point(&mut h, 18.0, 18.0);
+        assert!(h.state().ui.basic_color.selected_faces.is_empty(), "hidden boxes cannot change the multi-face selection");
+    }
+
+    #[test]
+    fn mask_header_checkbox_toggles_the_face_boxes() {
+        let mut h = harness(vec2(1440.0, 900.0));
+        assert!(h.state().ui.basic_color.face_boxes_visible, "the boxes show by default");
+        h.get_by_label(text::FACE_BOXES).click();
+        h.run_steps(2);
+        assert!(!h.state().ui.basic_color.face_boxes_visible, "the header checkbox hides the boxes");
+        h.get_by_label(text::FACE_BOXES).click();
+        h.run_steps(2);
+        assert!(h.state().ui.basic_color.face_boxes_visible, "and shows them again");
+    }
+
+    #[test]
+    fn selected_faces_option_shows_a_checkbox_per_detected_face() {
+        let mut h = harness(vec2(1440.0, 900.0));
+        h.state_mut().ui.basic_color.face_choices = 3;
+        h.run_steps(2);
+        h.query_all_by_role(egui::accesskit::Role::ComboBox).next().expect("face choice combo").click();
+        h.run_steps(2);
+        h.get_by_label(text::SELECTED_FACES).click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.face_choice, MULTI_FACE);
+        for n in ["1", "2", "3"] {
+            assert!(h.query_all_by_label(n).next().is_some(), "the multi row has a checkbox for face {n}");
+        }
+    }
+
     #[test]
     fn default_state_round_trips_through_serde() {
         let state = BasicColorState::default();
         assert!(state.status.is_empty() && !state.status_error);
         assert_eq!(state.face_choice, 0);
         assert_eq!(state.face_coverage, FaceCoverage::FaceNeck);
+        assert!(state.face_boxes_visible, "the numbered boxes show by default");
+        assert!(state.selected_faces.is_empty(), "no explicit multi-face selection yet");
         let json = serde_json::to_string(&state).expect("serialize");
         let back: BasicColorState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
@@ -940,6 +1217,47 @@ mod tests {
         let main: BasicColorState = serde_json::from_str(r#"{"faceChoice":1,"faceCoverage":"face"}"#).expect("main face mode");
         assert_eq!(main.face_choice, 1);
         assert_eq!(main.face_coverage, FaceCoverage::Face);
+        let multi: BasicColorState = serde_json::from_str(r#"{"faceBoxesVisible":false,"selectedFaces":[2,3]}"#).expect("multi-face state");
+        assert!(!multi.face_boxes_visible);
+        assert_eq!(multi.selected_faces, vec![2, 3]);
+        let mut with_multi = multi.clone();
+        with_multi.face_choice = MULTI_FACE;
+        let back: BasicColorState = serde_json::from_str(&serde_json::to_string(&with_multi).expect("serialize")).expect("deserialize");
+        assert_eq!(back, with_multi);
+        assert_eq!(back.face_choice, MULTI_FACE);
+    }
+
+    #[test]
+    fn multi_face_mode_maps_to_an_index_array() {
+        assert_eq!(engine_faces_value(MULTI_FACE, &[1, 3], 3), json!([1, 3]));
+        assert_eq!(engine_faces_value(MULTI_FACE, &[], 3), json!([1, 2, 3]), "an empty selection is every detected face");
+        assert_eq!(engine_faces_value(MULTI_FACE, &[2, 5], 3), json!([2]), "stale numbers are pruned before the command");
+        assert_eq!(engine_faces_value(MULTI_FACE, &[1], 0), json!("all"), "no scan yet falls back to all");
+        // The single-face modes keep their existing mapping.
+        assert_eq!(engine_faces_value(0, &[2], 3), json!("all"));
+        assert_eq!(engine_faces_value(1, &[2], 3), json!("main"));
+        assert_eq!(engine_faces_value(2, &[2], 3), json!("1"));
+        assert_eq!(engine_faces_value(5, &[2], 3), json!("4"));
+    }
+
+    #[test]
+    fn multi_face_toggle_keeps_the_selection_sorted_and_unique() {
+        let mut selected = vec![3, 1, 3];
+        selected.sort_unstable();
+        selected.dedup();
+        toggle_selected_face(&mut selected, 2, 3);
+        assert_eq!(selected, vec![1, 2, 3]);
+        toggle_selected_face(&mut selected, 2, 3);
+        assert_eq!(selected, vec![1, 3]);
+        // An empty selection means every face: unchecking face 1 leaves faces 2 and 3.
+        let mut selected = Vec::new();
+        toggle_selected_face(&mut selected, 1, 3);
+        assert_eq!(selected, vec![2, 3]);
+        assert_eq!(face_selection_status(&selected), "Selected faces: 2, 3.");
+        toggle_selected_face(&mut selected, 2, 3);
+        toggle_selected_face(&mut selected, 3, 3);
+        assert!(selected.is_empty());
+        assert_eq!(face_selection_status(&selected), "All faces selected.");
     }
 
     #[test]

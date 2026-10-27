@@ -3827,7 +3827,9 @@ curves	Smooth	Làm mượt
 	Faces	Khuôn mặt
 	All faces	Tất cả khuôn mặt
 	Main face	Mặt chính
+	Selected faces	Nhiều mặt
 	Face {n}	Khuôn mặt {n}
+	Face boxes	Khung mặt
 	Face only	Chỉ khuôn mặt
 	Face + neck + chest	Mặt + cổ + ngực
 	Detecting face…	Đang nhận diện khuôn mặt…
@@ -3835,6 +3837,8 @@ curves	Smooth	Làm mượt
 	Found {faces} faces.	Đã tìm thấy {faces} khuôn mặt.
 	Face detection cancelled.	Đã hủy nhận diện khuôn mặt.
 	Selected face {n}.	Đã chọn khuôn mặt {n}.
+	Selected faces: {list}.	Đã chọn khuôn mặt: {list}.
+	All faces selected.	Đã chọn tất cả khuôn mặt.
 	Apply to whole image	Áp dụng cho toàn ảnh
 	Show selection	Hiện vùng chọn
 	Hide selection	Ẩn vùng chọn

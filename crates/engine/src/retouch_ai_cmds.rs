@@ -1743,32 +1743,54 @@ fn analyze_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum FaceChoice {
     All,
     Main,
     /// 1-based order in the reading order (left to right, then top to bottom).
     Index(usize),
+    /// Several 1-based faces in reading order, unique and sorted.
+    Selected(Vec<usize>),
 }
 
 impl FaceChoice {
     fn parse(p: &Value) -> Result<Self> {
-        let bad_faces = || bad(FROM_FACE, "`faces` must be \"all\", \"main\" or a 1-based face number");
+        let bad_faces = || bad(FROM_FACE, "`faces` must be \"all\", \"main\", a 1-based face number or a non-empty array of face numbers");
+        let one = |v: &Value| -> Option<usize> {
+            match v {
+                Value::Number(n) => n.as_u64().filter(|n| *n >= 1).map(|n| n as usize),
+                Value::String(s) => s.parse::<usize>().ok().filter(|n| *n >= 1),
+                _ => None,
+            }
+        };
         match p.get("faces") {
             None => Ok(Self::All),
             Some(Value::String(s)) if s == "all" => Ok(Self::All),
             Some(Value::String(s)) if s == "main" => Ok(Self::Main),
-            Some(Value::Number(n)) => n.as_u64().filter(|n| *n >= 1).map(|n| Self::Index(n as usize)).ok_or_else(bad_faces),
-            Some(Value::String(s)) => s.parse::<usize>().ok().filter(|n| *n >= 1).map(Self::Index).ok_or_else(bad_faces),
+            Some(v @ (Value::Number(_) | Value::String(_))) => one(v).map(Self::Index).ok_or_else(bad_faces),
+            Some(Value::Array(items)) => {
+                if items.is_empty() {
+                    return Err(bad(FROM_FACE, "`faces` must name at least one face"));
+                }
+                let mut selected = Vec::with_capacity(items.len());
+                for item in items {
+                    let n = one(item).ok_or_else(bad_faces)?;
+                    selected.push(n);
+                }
+                selected.sort_unstable();
+                selected.dedup();
+                Ok(Self::Selected(selected))
+            }
             Some(_) => Err(bad_faces()),
         }
     }
 
-    fn id(self) -> String {
+    fn id(&self) -> String {
         match self {
             Self::All => "all".into(),
             Self::Main => "main".into(),
             Self::Index(n) => n.to_string(),
+            Self::Selected(ns) => format!("selected:{}", ns.iter().map(usize::to_string).collect::<Vec<_>>().join(",")),
         }
     }
 }
@@ -1891,20 +1913,30 @@ fn analyze_faces(
     if found.is_empty() {
         return Err(EngineError::Other("no face found".into()));
     }
-    let faces: Vec<Rect> = match choice {
+    let faces: Vec<Rect> = match &choice {
         FaceChoice::All => found.clone(),
         FaceChoice::Main => found.iter().copied().max_by(|a, b| rect_area(*a).total_cmp(&rect_area(*b))).into_iter().collect(),
         FaceChoice::Index(n) => found.get(n.saturating_sub(1)).copied().into_iter().collect(),
+        FaceChoice::Selected(ns) => {
+            let mut faces = Vec::with_capacity(ns.len());
+            let mut seen = std::collections::BTreeSet::new();
+            for n in ns {
+                let Some(rect) = found.get(n.saturating_sub(1)).copied() else {
+                    return Err(EngineError::Other(format!("face {n} of {} not found", found.len())));
+                };
+                if seen.insert(*n) {
+                    faces.push(rect);
+                }
+            }
+            faces
+        }
     };
     if faces.is_empty() {
-        return Err(EngineError::Other(format!(
-            "face {} of {} not found",
-            match choice {
-                FaceChoice::Index(n) => n,
-                _ => 0,
-            },
-            found.len()
-        )));
+        return Err(EngineError::Other(match &choice {
+            FaceChoice::Index(n) => format!("face {n} of {} not found", found.len()),
+            FaceChoice::Selected(_) => "no face selected".into(),
+            _ => "no face found".into(),
+        }));
     }
     ctx.progress(0.65, "Building mask");
     let mask = if build_mask { Some(face_mask(doc, &px, aw, ah, &faces, coverage).ok_or_else(|| EngineError::Other("no face found".into()))?) } else { None };
@@ -2071,7 +2103,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Layer Mask from Face",
             menu: &[],
             shortcut: None,
-            params: r##"{"layer":id? (adjustment layer; default active layer),"faces":"all"|"main"|1..n="all","coverage":"face"|"faceNeck"="faceNeck"} → {"layer":id,"faces":count,"selected":count,"mode":"all"|"main"|n,"coverage":"face"|"faceNeck","boxes":[[x,y,w,h],…]}"##,
+            params: r##"{"layer":id? (adjustment layer; default active layer),"faces":"all"|"main"|1..n|[1,3,…]="all","coverage":"face"|"faceNeck"="faceNeck"} → {"layer":id,"faces":count,"selected":count,"mode":"all"|"main"|n|"selected:1,3","coverage":"face"|"faceNeck","boxes":[[x,y,w,h],…]}"##,
             enabled: has_adjustment_layer,
             run: from_face_cmd,
             journal: true,
@@ -2701,6 +2733,66 @@ mod tests {
         let mask = d.doc.layer(id).unwrap().mask.as_ref().unwrap();
         assert!(mask.value(18, 100) > 0.2, "face 1 is the left-hand face");
         assert!(mask.value(96, 78) < 0.05, "face 2 stays out");
+    }
+
+    #[test]
+    fn face_choice_parses_all_main_single_and_multi() {
+        assert_eq!(FaceChoice::parse(&json!({})).unwrap(), FaceChoice::All);
+        assert_eq!(FaceChoice::parse(&json!({"faces": "all"})).unwrap(), FaceChoice::All);
+        assert_eq!(FaceChoice::parse(&json!({"faces": "main"})).unwrap(), FaceChoice::Main);
+        assert_eq!(FaceChoice::parse(&json!({"faces": 2})).unwrap(), FaceChoice::Index(2));
+        assert_eq!(FaceChoice::parse(&json!({"faces": "3"})).unwrap(), FaceChoice::Index(3));
+        // Arrays take numbers or numeric strings; duplicates collapse and the order is reading order.
+        assert_eq!(FaceChoice::parse(&json!({"faces": [3, "1", 3]})).unwrap(), FaceChoice::Selected(vec![1, 3]));
+        assert_eq!(FaceChoice::parse(&json!({"faces": ["2"]})).unwrap(), FaceChoice::Selected(vec![2]));
+        assert_eq!(FaceChoice::Selected(vec![1, 3]).id(), "selected:1,3");
+        for params in [
+            json!({"faces": []}),
+            json!({"faces": [0]}),
+            json!({"faces": [-1]}),
+            json!({"faces": ["x"]}),
+            json!({"faces": [1.5]}),
+            json!({"faces": [true]}),
+            json!({"faces": {}}),
+        ] {
+            assert!(FaceChoice::parse(&params).is_err(), "{params}");
+        }
+        let err = FaceChoice::parse(&json!({"faces": []})).unwrap_err().to_string();
+        assert!(err.contains("at least one face"), "{err}");
+    }
+
+    #[test]
+    fn from_face_selected_boxes_union_two_faces() {
+        let (mut s, id) = adjustment_session();
+        let mut doc = (*s.active().unwrap().doc).clone();
+        add_skin_blob(&mut doc, 18, 100, 10, 10);
+        s.active_mut().unwrap().doc = std::sync::Arc::new(doc);
+        let big = Rect::from_xywh(70, 45, 52, 60);
+        let small = Rect::from_xywh(8, 90, 20, 20);
+
+        let r = from_face_cmd_with(&mut s, &json!({"layer": id.0, "faces": [1, 2]}), Some(&[big, small])).unwrap();
+        assert_eq!(r["faces"], 2);
+        assert_eq!(r["selected"], 2);
+        assert_eq!(r["mode"], "selected:1,2");
+        let d = s.active().unwrap();
+        let mask = d.doc.layer(id).unwrap().mask.as_ref().unwrap();
+        assert!(mask.value(18, 100) > 0.2, "the left-hand face is part of the union");
+        assert!(mask.value(96, 78) > 0.5, "the right-hand face is part of the union");
+
+        // One index still works and narrows the mask.
+        let r = from_face_cmd_with(&mut s, &json!({"layer": id.0, "faces": [1]}), Some(&[big, small])).unwrap();
+        assert_eq!(r["selected"], 1);
+        assert_eq!(r["mode"], "selected:1");
+        let d = s.active().unwrap();
+        let mask = d.doc.layer(id).unwrap().mask.as_ref().unwrap();
+        assert!(mask.value(18, 100) > 0.2, "face 1 stays");
+        assert!(mask.value(96, 78) < 0.05, "face 2 stays out of a one-face selection");
+
+        // A missing index is a clear error, and the old mask survives it.
+        let before = s.active().unwrap().doc.layer(id).unwrap().mask.clone();
+        let err = from_face_cmd_with(&mut s, &json!({"layer": id.0, "faces": [3]}), Some(&[big, small])).unwrap_err().to_string();
+        assert!(err.contains("face 3 of 2 not found"), "{err}");
+        assert_eq!(s.active().unwrap().doc.layer(id).unwrap().mask, before, "a failed selection keeps the old mask");
     }
 
     #[test]
