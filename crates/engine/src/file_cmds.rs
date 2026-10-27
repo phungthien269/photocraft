@@ -18,6 +18,9 @@ use photocraft_raster::{Surface, from_rgba_into};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, layer_param};
+use crate::jobs::JobCtx;
+use crate::presets::Group;
+use crate::presets::color::ColorPreset;
 use crate::{EngineError, Result, Session};
 
 mod batch_naming;
@@ -1094,25 +1097,46 @@ pub(crate) fn list_images_tree(dir: &str, _skip: &str, _cmd: &str) -> Result<Vec
 /// (`"same"` keeps the input's extension). Errors per file are collected, not fatal.
 pub(crate) fn process_files(inputs: &[String], output: &str, format: &str, save: SaveOpts, suffix: &str, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
     let inputs: Vec<BatchInput> = inputs.iter().map(|path| BatchInput { path: path.clone(), rel_dir: String::new() }).collect();
-    process_tree(&inputs, output, format, save, suffix, f)
+    process_tree(&inputs, output, format, save, suffix, f, None)
 }
 
 /// [`process_files`] for inputs from subfolders: each result goes to its input's relative folder
 /// under `output` (created as needed), so `a/x.png` and `b/x.png` don't collide.
-pub(crate) fn process_tree(inputs: &[BatchInput], output: &str, format: &str, save: SaveOpts, suffix: &str, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
+pub(crate) fn process_tree(
+    inputs: &[BatchInput],
+    output: &str,
+    format: &str,
+    save: SaveOpts,
+    suffix: &str,
+    f: &dyn Fn(&mut Session) -> Result<()>,
+    ctl: Option<&JobCtx>,
+) -> Value {
     let outputs = inputs.iter().map(|BatchInput { path, rel_dir }| {
         let ext =
             if format == "same" { path.rsplit('.').next().unwrap_or("png").to_ascii_lowercase() } else { format.trim_start_matches('.').to_ascii_lowercase() };
         (path.as_str(), join(&join(output, rel_dir), &format!("{}{suffix}.{ext}", stem(path))))
     });
-    process_outputs(outputs, save, f)
+    process_outputs(outputs, save, f, ctl)
 }
 
-fn process_outputs<'a>(outputs: impl IntoIterator<Item = (&'a str, String)>, save: SaveOpts, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
+fn process_outputs<'a>(
+    outputs: impl IntoIterator<Item = (&'a str, String)>,
+    save: SaveOpts,
+    f: &dyn Fn(&mut Session) -> Result<()>,
+    ctl: Option<&JobCtx>,
+) -> Value {
+    let outputs: Vec<(&str, String)> = outputs.into_iter().collect();
+    let total = outputs.len().max(1);
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
-    for (path, out) in outputs {
+    for (i, (path, out)) in outputs.into_iter().enumerate() {
+        if ctl.is_some_and(|c| c.cancelled()) {
+            break;
+        }
+        if let Some(c) = ctl {
+            c.progress(i as f32 / total as f32, &format!("Processing {}", file_name(path)));
+        }
         let r = (|| -> Result<()> {
             written.check(&out).map_err(EngineError::Other)?;
             let bytes = read_file(path)?;
@@ -1131,6 +1155,9 @@ fn process_outputs<'a>(outputs: impl IntoIterator<Item = (&'a str, String)>, sav
             }
             Err(e) => errors.push(json!({"file": path, "error": e.to_string()})),
         }
+    }
+    if let Some(c) = ctl {
+        c.progress(1.0, "Done");
     }
     json!({"files": files, "errors": errors})
 }
@@ -1154,6 +1181,39 @@ impl OutputClaims {
     pub fn record(&mut self, out: &str, input: &str) {
         self.0.insert(out.to_lowercase(), input.to_string());
     }
+}
+
+/// Everything a batch needs after validation. It is `Send` so the work can run on a background
+/// job; the per-file scratch sessions are created inside the worker.
+struct BatchPlan {
+    steps: Vec<(String, Value)>,
+    output: String,
+    inputs: Vec<BatchInput>,
+    format: String,
+    names: Option<Vec<String>>,
+    save: SaveOpts,
+    actions: crate::actions_cmds::ActionState,
+    color_presets: Vec<Group<ColorPreset>>,
+}
+
+fn batch_apply(plan: &BatchPlan, ctl: Option<&JobCtx>) -> Result<Value> {
+    let run = |scratch: &mut Session| {
+        scratch.actions = plan.actions.clone();
+        scratch.presets.color_presets = plan.color_presets.clone();
+        for (id, params) in &plan.steps {
+            let r = scratch.execute(id, params.clone())?;
+            // A failed step inside a called action makes this file an error, not a saved result.
+            if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
+                return Err(EngineError::Other(error));
+            }
+        }
+        Ok(())
+    };
+    let r = match &plan.names {
+        Some(names) => process_outputs(plan.inputs.iter().map(|i| i.path.as_str()).zip(names.iter().cloned()), plan.save, &run, ctl),
+        None => process_tree(&plan.inputs, &plan.output, &plan.format, plan.save, "", &run, ctl),
+    };
+    Ok(r)
 }
 
 fn batch(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1191,23 +1251,10 @@ fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // caller's colour library so an apply step picks the preset a click would, including edits to
     // the built-ins (Color Presets batch uses `color.presets.apply` by name).
     let color_presets = s.presets.color_presets.clone();
-    let run = |scratch: &mut Session| {
-        scratch.actions = actions.clone();
-        scratch.presets.color_presets = color_presets.clone();
-        for (id, params) in &steps {
-            let r = scratch.execute(id, params.clone())?;
-            // A failed step inside a called action makes this file an error, not a saved result.
-            if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
-                return Err(EngineError::Other(error));
-            }
-        }
-        Ok(())
-    };
-    let r = match names {
-        Some(names) => process_outputs(inputs.iter().map(|i| i.path.as_str()).zip(names), save, &run),
-        None => process_tree(&inputs, &output, &format, save, "", &run),
-    };
-    Ok(r)
+    let plan = BatchPlan { steps, output, inputs, format, names, save, actions, color_presets };
+    // `jobs::run` spawns when the command was started with `Session::start`, and runs inline for
+    // scripts/tests. Batch has no active document to lock; each file gets a scratch session.
+    crate::jobs::run(s, "Batch", false, move |ctx| batch_apply(&plan, Some(ctx)), |_s, r| Ok(r))
 }
 
 fn image_processor(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1220,15 +1267,23 @@ fn image_processor(s: &mut Session, p: &Value) -> Result<Value> {
         (w, h) => Some(json!({"width": w.unwrap_or(1e9), "height": h.unwrap_or(1e9), "dontEnlarge": true})),
     };
     let to_srgb = p.get("convertToSrgb").and_then(Value::as_bool).unwrap_or(false);
-    let r = process_tree(&inputs, &output, &format, SaveOpts::from_params(s, p, cmd)?.or_quality(8.0), "", &|scratch| {
-        if to_srgb && scratch.active().is_some_and(|d| d.doc.mode != ColorMode::Rgb) {
-            scratch.execute("image.mode.rgb", json!({}))?;
-        }
-        if let Some(fp) = &fit {
-            fit_image(scratch, fp)?;
-        }
-        Ok(())
-    });
+    let r = process_tree(
+        &inputs,
+        &output,
+        &format,
+        SaveOpts::from_params(s, p, cmd)?.or_quality(8.0),
+        "",
+        &|scratch| {
+            if to_srgb && scratch.active().is_some_and(|d| d.doc.mode != ColorMode::Rgb) {
+                scratch.execute("image.mode.rgb", json!({}))?;
+            }
+            if let Some(fp) = &fit {
+                fit_image(scratch, fp)?;
+            }
+            Ok(())
+        },
+        None,
+    );
     Ok(r)
 }
 

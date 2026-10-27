@@ -3830,6 +3830,7 @@ curves	Smooth	Làm mượt
 	Scanning faces…	Đang quét khuôn mặt…
 	Found {faces} faces.	Đã tìm thấy {faces} khuôn mặt.
 	Face detection cancelled.	Đã hủy nhận diện khuôn mặt.
+	Selected face {n}.	Đã chọn khuôn mặt {n}.
 	Apply to whole image	Áp dụng cho toàn ảnh
 	Show selection	Hiện vùng chọn
 	Hide selection	Ẩn vùng chọn
@@ -3850,6 +3851,8 @@ curves	Smooth	Làm mượt
 	Create new color preset from the current look	Tạo preset màu mới từ look hiện tại
 	Open an image to apply or save a look.	Mở một ảnh để áp dụng hoặc lưu look.
 	No presets yet. Save the current look to create one.	Chưa có preset nào. Hãy lưu look hiện tại để tạo preset đầu tiên.
+	Search presets	Tìm preset
+	No presets match your search.	Không có preset nào khớp tìm kiếm.
 	No visible color/tone layers to save.	Không có lớp màu/tông nào đang hiện để lưu.
 	Applied preset “{name}”.	Đã áp dụng preset “{name}”.
 	Apply preset failed: {error}	Áp dụng preset thất bại: {error}
@@ -3864,6 +3867,7 @@ curves	Smooth	Làm mượt
 	Select a preset first.	Hãy chọn một preset trước.
 	Choose a different output folder.	Hãy chọn thư mục đích khác thư mục nguồn.
 	Batch failed: every file reported an error.	Hàng loạt thất bại: mọi tệp đều báo lỗi.
+	Batch cancelled. Files already written were kept.	Đã hủy batch. Các tệp đã ghi vẫn được giữ.
 	{n} layers	{n} lớp
 	1 layer	1 lớp
 	Presets…	Preset…

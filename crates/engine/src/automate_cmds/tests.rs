@@ -268,6 +268,34 @@ fn batch_and_droplets_skip_recorded_view_steps() {
 }
 
 #[test]
+fn batch_runs_as_a_background_job() {
+    use crate::jobs::Started;
+    let dir = tmp("batch-job");
+    images(&dir, 3, 16, 12);
+    let mut s = Session::new();
+    let started = s
+        .start(
+            "file.automate.batch",
+            json!({
+                "steps": [["image.imageRotation.90cw", {}]],
+                "input": dir.clone(),
+                "output": format!("{dir}/out"),
+                "format": "png",
+            }),
+        )
+        .unwrap();
+    let id = match started {
+        Started::Job(id) => id,
+        Started::Done(_) => panic!("batch must be a background job when started"),
+    };
+    assert_eq!(s.job(id).map(|j| j.state), Some("running"));
+    let r = s.wait_job(id).unwrap();
+    assert_eq!(r["files"].as_array().map(Vec::len), Some(3), "{r}");
+    assert!(r["errors"].as_array().is_some_and(Vec::is_empty), "{r}");
+    assert!(s.job(id).is_none(), "the finished job leaves the running table");
+}
+
+#[test]
 fn statistics_makes_a_stack_mode_smart_object() {
     let dir = tmp("stats");
     let files = images(&dir, 3, 16, 12);

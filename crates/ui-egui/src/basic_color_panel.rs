@@ -80,6 +80,7 @@ pub(crate) mod text {
     pub const SCANNING_FACES: &str = "Scanning faces…";
     pub const FACES_FOUND: &str = "Found {faces} faces.";
     pub const FACE_CANCELLED: &str = "Face detection cancelled.";
+    pub const FACE_BOX_SELECTED: &str = "Selected face {n}.";
     pub const APPLY_WHOLE: &str = "Apply to whole image";
     pub const SHOW_SELECTION: &str = "Show selection";
     pub const HIDE_SELECTION: &str = "Hide selection";
@@ -127,6 +128,7 @@ pub(crate) mod text {
         SCANNING_FACES,
         FACES_FOUND,
         FACE_CANCELLED,
+        FACE_BOX_SELECTED,
         APPLY_WHOLE,
         SHOW_SELECTION,
         HIDE_SELECTION,
@@ -183,6 +185,9 @@ pub struct BasicColorState {
     /// How many faces the last scan found (0: no scan yet). Transient.
     #[serde(skip)]
     pub face_choices: usize,
+    /// Face boxes in document pixels, in the same reading order as the choices. Transient.
+    #[serde(skip)]
+    pub face_boxes: Vec<[i32; 4]>,
     /// The document/layer the face choices belong to. Transient.
     #[serde(skip)]
     pub face_scan_key: Option<(u64, LayerId)>,
@@ -291,6 +296,19 @@ fn clear_face_job(app: &mut PhotocraftApp) {
 fn finish_face_result(app: &mut PhotocraftApp, kind: FaceJobKind, layer: LayerId, result: serde_json::Value) {
     let faces = result.get("faces").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
     app.ui.basic_color.face_choices = faces;
+    app.ui.basic_color.face_boxes = result
+        .get("boxes")
+        .and_then(serde_json::Value::as_array)
+        .map(|boxes| {
+            boxes
+                .iter()
+                .filter_map(|b| {
+                    let a = b.as_array()?;
+                    Some([a.first()?.as_i64()? as i32, a.get(1)?.as_i64()? as i32, a.get(2)?.as_i64()? as i32, a.get(3)?.as_i64()? as i32])
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     app.ui.basic_color.face_scan_key = app.session.active().map(|st| (st.doc.id.0, layer));
     if kind == FaceJobKind::Apply {
         let count = faces.to_string();
@@ -310,6 +328,7 @@ fn finish_face_result(app: &mut PhotocraftApp, kind: FaceJobKind, layer: LayerId
 fn finish_face_error(app: &mut PhotocraftApp, error: String) {
     if app.ui.basic_color.face_job_kind == FaceJobKind::Scan {
         app.ui.basic_color.face_choices = 0;
+        app.ui.basic_color.face_boxes.clear();
     }
     if error.contains("no face found") || error.contains("not found") {
         set_status(&mut app.ui.basic_color, tl!(text::NO_FACE).to_string(), true);
@@ -518,6 +537,60 @@ fn mask_controls(
     ui.add(egui::Label::new(egui::RichText::new(hint).size(10.5).color(t.text_faint)).wrap());
 }
 
+/// Numbered face boxes over the canvas: a click selects that face in the panel's dropdown. The
+/// boxes are view-only and follow the current zoom, pan, rotation and flip. This runs in the
+/// canvas pass, below the floating panel, so panel controls stay clickable.
+pub(crate) fn draw_face_boxes(app: &mut PhotocraftApp, ui: &egui::Ui, painter: &egui::Painter, xf: &crate::canvas::ViewXform) {
+    if app.ui.basic_color.face_boxes.is_empty() || app.ui.basic_color.face_busy || active_basic_color(app).is_none() {
+        return;
+    }
+    let boxes = app.ui.basic_color.face_boxes.clone();
+    let choice = app.ui.basic_color.face_choice;
+    let main = boxes.iter().enumerate().max_by_key(|(_, b)| i64::from(b[2].max(0)) * i64::from(b[3].max(0))).map(|(i, _)| i);
+    let mut chosen = None;
+    for (i, b) in boxes.iter().enumerate() {
+        let [x, y, w, h] = *b;
+        let pts = [
+            xf.to_screen(x as f32, y as f32),
+            xf.to_screen((x + w) as f32, y as f32),
+            xf.to_screen((x + w) as f32, (y + h) as f32),
+            xf.to_screen(x as f32, (y + h) as f32),
+        ];
+        let rect = egui::Rect::from_points(&pts);
+        if !ui.clip_rect().intersects(rect) {
+            continue;
+        }
+        let selected = choice == i + 2 || (choice == 1 && main == Some(i));
+        let stroke = if selected { Stroke::new(2.0, egui::Color32::from_rgb(255, 210, 90)) } else { Stroke::new(1.2, egui::Color32::WHITE) };
+        if selected {
+            painter.add(egui::Shape::convex_polygon(pts.to_vec(), egui::Color32::from_rgba_unmultiplied(255, 210, 90, 35), Stroke::NONE));
+        }
+        painter.add(egui::Shape::closed_line(pts.to_vec(), stroke));
+        let badge = egui::Rect::from_min_size(rect.left_top() + vec2(4.0, 4.0), vec2(18.0, 16.0));
+        painter.rect_filled(badge, 3.0, if selected { egui::Color32::from_rgb(255, 210, 90) } else { egui::Color32::from_black_alpha(180) });
+        painter.text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            (i + 1).to_string(),
+            theme::semibold(11.0),
+            if selected { egui::Color32::BLACK } else { egui::Color32::WHITE },
+        );
+        let resp = ui.interact(rect, egui::Id::new(("basic-color-face-box", i)), Sense::click());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            chosen = Some(i + 1);
+        }
+        resp.on_hover_text(crate::i18n::fmt(tl!(text::FACE_NUMBER), &[("n", &(i + 1).to_string())]));
+    }
+    if let Some(n) = chosen {
+        app.ui.basic_color.face_choice = n + 1;
+        let message = crate::i18n::fmt(tl!(text::FACE_BOX_SELECTED), &[("n", &n.to_string())]);
+        set_status(&mut app.ui.basic_color, message, false);
+    }
+}
+
 /// Window › Basic Color. Draws nothing when the menu closed it; never needs a document.
 pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.panels.basic_color {
@@ -530,6 +603,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let key = app.session.active().map(|st| (st.doc.id.0, info.id));
         if app.ui.basic_color.face_scan_key != key && !app.ui.basic_color.face_busy {
             app.ui.basic_color.face_choices = 0;
+            app.ui.basic_color.face_boxes.clear();
             app.ui.basic_color.face_choice = if app.ui.basic_color.face_choice == 1 { 1 } else { 0 };
             app.ui.basic_color.face_scan_key = key;
         }
@@ -798,6 +872,7 @@ mod tests {
         let mut app = PhotocraftApp::new(session, crate::Services::default());
         finish_face_result(&mut app, FaceJobKind::Scan, id, json!({"faces": 2, "boxes": [[0,0,10,10],[20,20,10,10]]}));
         assert_eq!(app.ui.basic_color.face_choices, 2);
+        assert_eq!(app.ui.basic_color.face_boxes, vec![[0, 0, 10, 10], [20, 20, 10, 10]]);
         assert!(app.ui.basic_color.status.contains("2"));
         finish_face_result(&mut app, FaceJobKind::Apply, id, json!({"faces": 2, "selected": 1}));
         assert_eq!(app.ui.basic_color.face_choices, 2);
@@ -815,6 +890,39 @@ mod tests {
         assert_eq!(engine_face_choice(1), "main");
         assert_eq!(engine_face_choice(2), "1");
         assert_eq!(engine_face_choice(5), "4");
+    }
+
+    #[test]
+    fn clicking_a_numbered_face_box_selects_that_face() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("new document");
+        session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.last_canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(600.0, 500.0));
+        app.ui.views = vec![crate::state::View { zoom: 1.0, center: [32.0, 32.0], fit_pending: false, fill_pending: false, doc_size: [64, 64], rotation: 0.0 }];
+        app.ui.basic_color.face_choices = 1;
+        app.ui.basic_color.face_boxes = vec![[8, 8, 40, 40]];
+        app.ui.basic_color.face_choice = 0;
+        let mut h = Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                if let Some(xf) = crate::canvas::ViewXform::active(app) {
+                    let painter = ui.painter().clone();
+                    draw_face_boxes(app, ui, &painter, &xf);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(2);
+        let xf = crate::canvas::ViewXform::active(h.state()).expect("the canvas has a view");
+        let p = xf.to_screen(28.0, 28.0);
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.face_choice, 2, "the first face maps to choice index 2");
     }
 
     #[test]

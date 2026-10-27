@@ -12,6 +12,7 @@
 //! UI-state borrow is held across an engine command.
 
 use egui::{Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, pos2, vec2};
+use photocraft_engine::jobs::{JobId, Started};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -57,6 +58,8 @@ pub(crate) mod text {
     pub const NEW: &str = "Create new color preset from the current look";
     pub const OPEN_IMAGE: &str = "Open an image to apply or save a look.";
     pub const NO_PRESETS: &str = "No presets yet. Save the current look to create one.";
+    pub const SEARCH: &str = "Search presets";
+    pub const NO_MATCH: &str = "No presets match your search.";
     pub const NO_LAYERS: &str = "No visible color/tone layers to save.";
     pub const APPLIED: &str = "Applied preset “{name}”.";
     pub const APPLY_FAILED: &str = "Apply preset failed: {error}";
@@ -84,6 +87,7 @@ pub(crate) mod text {
     pub const BATCH_FINISHED: &str = "Batch finished: {files} files, {errors} errors";
     pub const BATCH_FAILED: &str = "Batch failed: {error}";
     pub const BATCH_ALL_FAILED: &str = "Batch failed: every file reported an error.";
+    pub const BATCH_CANCELLED: &str = "Batch cancelled. Files already written were kept.";
 
     pub const LAYERS: &str = "{n} layers";
     pub const ONE_LAYER: &str = "1 layer";
@@ -97,6 +101,8 @@ pub(crate) mod text {
         NEW,
         OPEN_IMAGE,
         NO_PRESETS,
+        SEARCH,
+        NO_MATCH,
         NO_LAYERS,
         APPLIED,
         APPLY_FAILED,
@@ -123,6 +129,7 @@ pub(crate) mod text {
         BATCH_FINISHED,
         BATCH_FAILED,
         BATCH_ALL_FAILED,
+        BATCH_CANCELLED,
         LAYERS,
         ONE_LAYER,
     ];
@@ -140,19 +147,28 @@ pub struct ColorPresetsState {
     pub include_subfolders: bool,
     /// The batch section is open (it starts open: the feature must be discoverable).
     pub batch_open: bool,
+    /// The preset browser's name filter.
+    pub search: String,
     /// The last save/apply/edit status.
     pub status: String,
     pub status_error: bool,
     /// The batch's own line, separate so a batch result doesn't hide a save/apply status.
     pub batch_status: String,
     pub batch_status_error: bool,
-    /// True while the (synchronous) batch call is in flight; Run is disabled meanwhile.
+    /// True while the background batch job is in flight; Run is disabled meanwhile.
     #[serde(skip)]
     pub batch_running: bool,
-    /// A validated batch waiting for the next frame, so "Running…" paints before the blocking
-    /// call. Session-only.
+    /// A validated batch waiting for the next frame, so the busy state paints before it starts.
     #[serde(skip)]
     pub(crate) batch_pending: Option<Value>,
+    /// The running batch job. Session-only.
+    #[serde(skip)]
+    pub batch_job: Option<JobId>,
+    /// Progress and message of the running batch (0..=1).
+    #[serde(skip)]
+    pub batch_progress: f32,
+    #[serde(skip)]
+    pub batch_message: String,
 }
 
 impl Default for ColorPresetsState {
@@ -163,12 +179,16 @@ impl Default for ColorPresetsState {
             batch_format: "same".into(),
             include_subfolders: false,
             batch_open: true,
+            search: String::new(),
             status: String::new(),
             status_error: false,
             batch_status: String::new(),
             batch_status_error: false,
             batch_running: false,
             batch_pending: None,
+            batch_job: None,
+            batch_progress: 0.0,
+            batch_message: String::new(),
         }
     }
 }
@@ -235,6 +255,23 @@ fn parse_library(value: &Value) -> Library {
         library.groups.push(LibraryGroup { name: name.to_string(), items });
     }
     library
+}
+
+/// The library reduced to the preset names containing `needle` (case-insensitive).
+fn filter_library(library: &Library, needle: &str) -> Library {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return library.clone();
+    }
+    let mut out = Library::default();
+    for group in &library.groups {
+        let items: Vec<LibraryItem> = group.items.iter().filter(|item| item.name.to_lowercase().contains(&needle)).cloned().collect();
+        if !items.is_empty() {
+            out.total += items.len();
+            out.groups.push(LibraryGroup { name: group.name.clone(), items });
+        }
+    }
+    out
 }
 
 /// Read the library through its command, as the panel contract specifies.
@@ -409,19 +446,65 @@ fn queue_batch(app: &mut PhotocraftApp) {
     }));
 }
 
-/// Run a validated batch (on the frame after [`queue_batch`], once "Running…" is painted).
-fn execute_batch(app: &mut PhotocraftApp, params: Value) {
-    let result = app.run("file.automate.batch", params);
+fn clear_batch_job(app: &mut PhotocraftApp) {
+    app.ui.color_presets.batch_job = None;
     app.ui.color_presets.batch_running = false;
-    match result {
-        Ok(value) => {
-            let (message, error) = batch_status(&value);
-            set_batch_status(app, message, error);
+    app.ui.color_presets.batch_progress = 0.0;
+    app.ui.color_presets.batch_message.clear();
+}
+
+fn finish_batch_value(app: &mut PhotocraftApp, value: &Value) {
+    let (message, error) = batch_status(value);
+    set_batch_status(app, message, error);
+    clear_batch_job(app);
+}
+
+fn finish_batch_error(app: &mut PhotocraftApp, error: &str) {
+    let message = crate::i18n::fmt(tl!(text::BATCH_FAILED), &[("error", error)]);
+    set_batch_status(app, message, true);
+    clear_batch_job(app);
+}
+
+/// Run a validated batch as a background job (on the frame after [`queue_batch`], once the busy
+/// state is painted). The engine reports per-file progress and checks cancellation between files.
+fn execute_batch(app: &mut PhotocraftApp, params: Value) {
+    match app.session.start("file.automate.batch", params) {
+        Ok(Started::Job(id)) => {
+            app.ui.color_presets.batch_job = Some(id);
+            app.ui.color_presets.batch_running = true;
+            app.ui.color_presets.batch_progress = 0.0;
+            app.ui.color_presets.batch_message = tl!(text::RUNNING).to_string();
         }
-        Err(error) => {
-            let message = crate::i18n::fmt(tl!(text::BATCH_FAILED), &[("error", &error)]);
-            set_batch_status(app, message, true);
+        Ok(Started::Done(value)) => finish_batch_value(app, &value),
+        Err(error) => finish_batch_error(app, &error.to_string()),
+    }
+}
+
+/// Pick up a finished batch job; the global jobs tick applies it before this runs.
+fn poll_batch_job(app: &mut PhotocraftApp) {
+    let Some(id) = app.ui.color_presets.batch_job else { return };
+    let Some(info) = app.session.jobs_with_recent().into_iter().find(|j| j.id == id) else {
+        clear_batch_job(app);
+        return;
+    };
+    match info.state {
+        "running" => {
+            app.ui.color_presets.batch_progress = info.progress;
+            app.ui.color_presets.batch_message = if info.message.is_empty() { tl!(text::RUNNING).to_string() } else { info.message.clone() };
         }
+        "done" => {
+            if let Some(result) = info.result {
+                finish_batch_value(app, &result);
+            } else {
+                clear_batch_job(app);
+            }
+        }
+        "failed" => finish_batch_error(app, info.error.as_deref().unwrap_or("batch failed")),
+        "cancelled" => {
+            set_batch_status(app, tl!(text::BATCH_CANCELLED).to_string(), false);
+            clear_batch_job(app);
+        }
+        _ => {}
     }
 }
 
@@ -537,6 +620,7 @@ enum Action {
     PickInput,
     PickOutput,
     RunBatch,
+    CancelBatch,
 }
 
 fn apply_action(app: &mut PhotocraftApp, action: Action) {
@@ -555,6 +639,13 @@ fn apply_action(app: &mut PhotocraftApp, action: Action) {
             });
         }
         Action::RunBatch => queue_batch(app),
+        Action::CancelBatch => {
+            if let Some(id) = app.ui.color_presets.batch_job {
+                app.session.cancel_job(id);
+            }
+            set_batch_status(app, tl!(text::BATCH_CANCELLED).to_string(), false);
+            clear_batch_job(app);
+        }
     }
 }
 
@@ -598,10 +689,20 @@ fn look_stops(hint: BasicHint) -> [(f32, [f32; 4]); 2] {
     [(0.0, shifted([0.16, 0.17, 0.19])), (1.0, shifted([0.86, 0.87, 0.84]))]
 }
 
-/// The item card: a simple look gradient (or a neutral one), its name and layer count.
-fn paint_item(ui: &egui::Ui, rect: Rect, item: &LibraryItem, t: &Tokens) {
+/// The item card: the current image thumbnail washed with the look's shadow/highlight colours, or
+/// a neutral look gradient when there is no document thumbnail yet.
+fn paint_item(ui: &egui::Ui, rect: Rect, item: &LibraryItem, t: &Tokens, preview: Option<&egui::TextureHandle>) {
     let stops = item.hint.map_or_else(|| neutral_stops(t), look_stops);
-    preset_panels::paint_gradient(ui, rect, &stops);
+    if let Some(tex) = preview {
+        ui.painter().image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        let wash =
+            |c: [f32; 4], a: u8| Color32::from_rgba_unmultiplied((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8, a);
+        let mid = rect.center().y;
+        ui.painter().rect_filled(Rect::from_min_max(rect.min, pos2(rect.right(), mid)), 0.0, wash(stops[0].1, 45));
+        ui.painter().rect_filled(Rect::from_min_max(pos2(rect.left(), mid), rect.max), 0.0, wash(stops[1].1, 45));
+    } else {
+        preset_panels::paint_gradient(ui, rect, &stops);
+    }
     // In list mode the brush is 20 points tall; the name is drawn beside it by the browser.
     if rect.width() < 40.0 || rect.height() < 28.0 {
         return;
@@ -677,7 +778,15 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
         actions.push(Action::RunBatch);
     }
     if state.batch_running {
-        ui.label(egui::RichText::new(tl!(text::RUNNING)).size(11.0).color(t.text_dim));
+        ui.horizontal(|ui| {
+            ui.add(egui::ProgressBar::new(state.batch_progress).desired_width(170.0).show_percentage());
+            if widgets::secondary_button(ui, tl!("Cancel"), 0.0).clicked() {
+                actions.push(Action::CancelBatch);
+            }
+        });
+        if !state.batch_message.is_empty() {
+            ui.add(egui::Label::new(egui::RichText::new(&state.batch_message).size(11.0).color(t.text_dim)).wrap());
+        }
     }
     if !state.batch_status.is_empty() {
         let color = if state.batch_status_error { t.danger } else { t.text_dim };
@@ -691,6 +800,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         app.ui.color_presets.batch_pending = None;
         return;
     }
+    poll_batch_job(app);
     // A batch validated last frame runs after this frame paints, so "Running…" is on screen.
     let running_now = app.ui.color_presets.batch_pending.take();
     if running_now.is_some() {
@@ -699,7 +809,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let has_document = app.session.active_index().is_some();
     let can_save = has_capturable_adjustment(app);
     let library = fetch_library(app);
-    let groups: Vec<GroupView> = library
+    let shown = filter_library(&library, &app.ui.color_presets.search);
+    let groups: Vec<GroupView> = shown
         .groups
         .iter()
         .map(|group| GroupView {
@@ -707,6 +818,14 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             items: group.items.iter().map(|item| ItemView { key: item.name.clone(), name: item.name.clone() }).collect(),
         })
         .collect();
+    let preview_tex = app.session.active().and_then(|st| {
+        st.doc
+            .layers
+            .iter()
+            .find(|layer| layer.visible && layer.surface().is_some())
+            .and_then(|layer| app.thumbs.get(&(layer.id, crate::mask_thumbs_ui::THUMB_LAYER)))
+            .map(|(_, tex)| tex.clone())
+    });
     let mut st = std::mem::take(&mut app.ui.presets_ui);
     st.sizes.entry(PANEL.to_string()).or_insert(DEFAULT_THUMB);
     let mut events = Vec::new();
@@ -721,8 +840,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT).max(0.0);
     let body_height = MAX_BODY.min(room);
     let thumb = &mut |ui: &egui::Ui, rect: Rect, gi: usize, ii: usize| {
-        if let Some(item) = library.groups.get(gi).and_then(|group| group.items.get(ii)) {
-            paint_item(ui, rect, item, &t);
+        if let Some(item) = shown.groups.get(gi).and_then(|group| group.items.get(ii)) {
+            paint_item(ui, rect, item, &t, preview_tex.as_ref());
         }
     };
     egui::Window::new(tl!(text::TITLE))
@@ -768,11 +887,16 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     let color = if app.ui.color_presets.status_error { t.danger } else { t.text_dim };
                     ui.add(egui::Label::new(egui::RichText::new(&app.ui.color_presets.status).size(11.0).color(color)).wrap());
                 }
+                ui.add(egui::TextEdit::singleline(&mut app.ui.color_presets.search).hint_text(tl!(text::SEARCH)).desired_width(ui.available_width()));
+                ui.add_space(3.0);
                 if library.total == 0 {
                     ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_PRESETS)).size(11.0).color(t.text_faint)).wrap());
                     ui.add_space(2.0);
+                } else if shown.total == 0 {
+                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_MATCH)).size(11.0).color(t.text_faint)).wrap());
+                    ui.add_space(2.0);
                 }
-                let max_h = (body_height - 270.0).clamp(90.0, 280.0);
+                let max_h = (body_height - 296.0).clamp(90.0, 280.0);
                 events = preset_panels::browser(ui, &mut st, PANEL, &groups, Place { canvas, max_h, new_tip: tl!(text::NEW), flush: false }, thumb);
                 batch_section(ui, &mut app.ui.color_presets, has_document, &mut actions);
                 ui.add_space(2.0);
@@ -796,7 +920,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if let Some(params) = running_now {
         execute_batch(app, params);
         ctx.request_repaint();
-    } else if app.ui.color_presets.batch_pending.is_some() {
+    } else if app.ui.color_presets.batch_pending.is_some() || app.ui.color_presets.batch_running {
         ctx.request_repaint();
     }
 }
@@ -1031,17 +1155,39 @@ mod tests {
     }
 
     #[test]
+    fn search_filters_presets_by_name_and_keeps_groups() {
+        let library = parse_library(&json!({"groups": [
+            {"name": "A", "presets": [{"name": "Warm", "layers": []}, {"name": "Cool", "layers": []}]},
+            {"name": "B", "presets": [{"name": "Warm B", "layers": []}]}
+        ]}));
+        let warm = filter_library(&library, "warm");
+        assert_eq!(warm.total, 2);
+        assert_eq!(warm.groups.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["A", "B"]);
+        assert_eq!(warm.groups[0].items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["Warm"]);
+        assert_eq!(filter_library(&library, "zzz").total, 0);
+        assert_eq!(filter_library(&library, "  ").total, 3);
+    }
+
+    #[test]
     fn batch_formats_never_offer_psd() {
         assert_eq!(FORMATS, ["same", "jpg", "png", "tiff"]);
         assert!(FORMATS.iter().all(|id| !id.eq_ignore_ascii_case("psd")));
     }
 
     #[test]
-    fn a_valid_batch_waits_for_the_busy_frame_and_runs_once() {
+    fn a_valid_batch_starts_one_job_and_can_be_cancelled() {
+        use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, SampleType};
+        let root = std::env::temp_dir().join(format!("photocraft-ui-batch-{}", std::process::id()));
+        let input = root.join("in");
+        let output = root.join("out");
+        std::fs::create_dir_all(&input).expect("input folder");
+        let img = Image::from_raw(1, 1, ChannelLayout::Rgb, SampleType::U8, vec![255, 0, 0]).expect("image");
+        let png = photocraft_codecs::encode(&img, Format::Png, &EncodeOptions::default()).expect("png");
+        std::fs::write(input.join("one.png"), png).expect("input image");
         let mut app = app_with_document();
         app.ui.presets_ui.selected.insert(PANEL.into(), "Warm Portrait".into());
-        app.ui.color_presets.batch_input = "/photos/in".into();
-        app.ui.color_presets.batch_output = "/photos/out".into();
+        app.ui.color_presets.batch_input = input.to_string_lossy().into_owned();
+        app.ui.color_presets.batch_output = output.to_string_lossy().into_owned();
         queue_batch(&mut app);
         assert_ne!(app.perf.last_command, "file.automate.batch", "validation only; the run waits a frame");
         assert!(!app.ui.color_presets.batch_running);
@@ -1049,9 +1195,14 @@ mod tests {
         app.ui.color_presets.batch_pending = None;
         app.ui.color_presets.batch_running = true;
         execute_batch(&mut app, params);
-        assert_eq!(app.perf.last_command, "file.automate.batch");
-        assert!(!app.ui.color_presets.batch_running);
-        assert!(!app.ui.color_presets.batch_status.is_empty(), "a result or error is reported");
+        let job = app.ui.color_presets.batch_job.expect("the batch runs as a background job");
+        assert!(app.ui.color_presets.batch_running);
+        apply_action(&mut app, Action::CancelBatch);
+        assert!(!app.ui.color_presets.batch_running && app.ui.color_presets.batch_job.is_none());
+        assert_eq!(app.ui.color_presets.batch_status, text::BATCH_CANCELLED);
+        assert!(app.session.job(job).is_none(), "cancel removes the running job");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
