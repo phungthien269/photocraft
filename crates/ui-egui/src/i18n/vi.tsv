@@ -3837,6 +3837,7 @@ curves	Smooth	Làm mượt
 	Selected faces	Nhiều mặt
 	Face {n}	Khuôn mặt {n}
 	Face boxes	Khung mặt
+	Alt+1…9 selects a face; Alt+0 selects all.	Alt+1…9 chọn một khuôn mặt; Alt+0 chọn tất cả.
 	Face only	Chỉ khuôn mặt
 	Face + neck + chest	Mặt + cổ + ngực
 	Detecting face…	Đang nhận diện khuôn mặt…

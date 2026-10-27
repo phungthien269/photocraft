@@ -9,6 +9,8 @@
 //! touches the document directly: every action is an engine command, queued while the panel draws
 //! and applied afterwards so no UI-state borrow is held across a command.
 
+use std::collections::HashMap;
+
 use egui::{Align2, CornerRadius, Sense, Stroke, vec2};
 use photocraft_doc::{Adjustment, LayerContent, LayerId};
 use photocraft_engine::jobs::{JobId, JobInfo, Started};
@@ -31,9 +33,9 @@ const HEADER_HEIGHT: f32 = 43.0;
 /// window has the room for it, and shorter — scrolling, never clipping — when it has not.
 pub const BODY_HEIGHT: f32 = 600.0;
 
-/// Headroom on top of [`BODY_HEIGHT`], so that a small change in the panel's content does not
-/// start the body scrolling.
-const BODY_HEADROOM: f32 = 20.0;
+/// Headroom on top of [`BODY_HEIGHT`], so that a small change in the panel's content (the face-key
+/// hint line) does not start the body scrolling.
+const BODY_HEADROOM: f32 = 44.0;
 /// The panel's id, so the tests can find its rectangle in egui's memory.
 fn panel_id() -> egui::Id {
     egui::Id::new("basic-color")
@@ -76,6 +78,7 @@ pub(crate) mod text {
     pub const SELECTED_FACES: &str = "Selected faces";
     pub const FACE_NUMBER: &str = "Face {n}";
     pub const FACE_BOXES: &str = "Face boxes";
+    pub const FACE_KEYS_HINT: &str = "Alt+1…9 selects a face; Alt+0 selects all.";
     pub const FACE_ONLY: &str = "Face only";
     pub const FACE_NECK: &str = "Face + neck + chest";
     pub const DETECTING_FACE: &str = "Detecting face…";
@@ -128,6 +131,7 @@ pub(crate) mod text {
         SELECTED_FACES,
         FACE_NUMBER,
         FACE_BOXES,
+        FACE_KEYS_HINT,
         FACE_ONLY,
         FACE_NECK,
         DETECTING_FACE,
@@ -196,6 +200,10 @@ pub struct BasicColorState {
     /// The faces picked in the "Selected faces" mode, 1-based. Empty means every detected face.
     /// Persisted; stale numbers are pruned after a scan or a layer change.
     pub selected_faces: Vec<usize>,
+    /// The multi-face selection remembered for each document id while the app is open, so switching
+    /// images and back keeps it. Session-only: stale ids are not restored after a relaunch.
+    #[serde(skip)]
+    pub face_selections: HashMap<u64, Vec<usize>>,
     /// How many faces the last scan found (0: no scan yet). Transient.
     #[serde(skip)]
     pub face_choices: usize,
@@ -225,6 +233,7 @@ impl Default for BasicColorState {
             face_coverage: FaceCoverage::default(),
             face_boxes_visible: true,
             selected_faces: Vec::new(),
+            face_selections: HashMap::new(),
             face_choices: 0,
             face_boxes: Vec::new(),
             face_scan_key: None,
@@ -383,6 +392,104 @@ fn prune_selected_faces(state: &mut BasicColorState) {
     state.selected_faces.dedup();
 }
 
+/// Remember the current multi-face selection for `doc` (empty: every detected face), so switching
+/// to another image and back keeps it while the app is open.
+fn remember_face_selection(state: &mut BasicColorState, doc: u64) {
+    state.face_selections.insert(doc, state.selected_faces.clone());
+}
+
+/// The multi-face selection remembered for `doc`; an empty list means every detected face.
+fn recalled_face_selection(state: &BasicColorState, doc: u64) -> Vec<usize> {
+    state.face_selections.get(&doc).cloned().unwrap_or_default()
+}
+
+/// The document whose face selection is current: the scan key's document, so a result that arrives
+/// for a layer still updates the right image.
+fn face_selection_doc(state: &BasicColorState) -> Option<u64> {
+    state.face_scan_key.map(|(doc, _)| doc)
+}
+
+/// The digit of a face key: 0 is "all faces", 1–9 are the numbered boxes.
+fn face_key_digit(key: egui::Key) -> Option<u8> {
+    Some(match key {
+        egui::Key::Num0 => 0,
+        egui::Key::Num1 => 1,
+        egui::Key::Num2 => 2,
+        egui::Key::Num3 => 3,
+        egui::Key::Num4 => 4,
+        egui::Key::Num5 => 5,
+        egui::Key::Num6 => 6,
+        egui::Key::Num7 => 7,
+        egui::Key::Num8 => 8,
+        egui::Key::Num9 => 9,
+        _ => return None,
+    })
+}
+
+/// One Alt+digit press: 0 selects every face, n picks/toggles face n.
+fn press_face_key(app: &mut PhotocraftApp, digit: u8) {
+    let faces = app.ui.basic_color.face_choices;
+    if digit == 0 {
+        // In multi mode an empty selection is every face, so the checkboxes all stay checked;
+        // otherwise "All faces" is the dropdown's first choice.
+        if app.ui.basic_color.face_choice == MULTI_FACE {
+            app.ui.basic_color.selected_faces.clear();
+        } else {
+            app.ui.basic_color.face_choice = 0;
+        }
+        let message = face_selection_status(&app.ui.basic_color.selected_faces);
+        set_status(&mut app.ui.basic_color, message, false);
+    } else {
+        let n = usize::from(digit);
+        if n > faces {
+            return;
+        }
+        if app.ui.basic_color.face_choice == MULTI_FACE {
+            toggle_multi_face(&mut app.ui.basic_color, n, faces);
+        } else {
+            app.ui.basic_color.face_choice = n + 1;
+            let message = crate::i18n::fmt(tl!(text::FACE_BOX_SELECTED), &[("n", &n.to_string())]);
+            set_status(&mut app.ui.basic_color, message, false);
+        }
+    }
+    if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
+        remember_face_selection(&mut app.ui.basic_color, doc);
+    }
+}
+
+/// Alt+1…9 picks or toggles a numbered face and Alt+0 selects every face, while the panel shows the
+/// face boxes. A focused text field keeps its keys, so typing never changes the selection.
+fn face_keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if !app.ui.basic_color.face_boxes_visible
+        || app.ui.basic_color.face_boxes.is_empty()
+        || app.ui.basic_color.face_busy
+        || app.ui.text_edit.is_some()
+        || ctx.text_edit_focused()
+    {
+        return;
+    }
+    let presses: Vec<u8> = ctx.input_mut(|i| {
+        let mut out = Vec::new();
+        i.events.retain(|e| match e {
+            // The physical key, so a layout that puts digits behind ⇧ still selects a face.
+            egui::Event::Key { key, physical_key, pressed: true, repeat: false, modifiers } if modifiers.alt && !modifiers.command && !modifiers.ctrl => {
+                match physical_key.and_then(face_key_digit).or_else(|| face_key_digit(*key)) {
+                    Some(d) => {
+                        out.push(d);
+                        false
+                    }
+                    None => true,
+                }
+            }
+            _ => true,
+        });
+        out
+    });
+    for digit in presses {
+        press_face_key(app, digit);
+    }
+}
+
 fn clear_face_job(app: &mut PhotocraftApp) {
     app.ui.basic_color.face_job = None;
     app.ui.basic_color.face_job_layer = None;
@@ -407,6 +514,9 @@ fn finish_face_result(app: &mut PhotocraftApp, kind: FaceJobKind, layer: LayerId
         .unwrap_or_default();
     app.ui.basic_color.face_scan_key = app.session.active().map(|st| (st.doc.id.0, layer));
     prune_selected_faces(&mut app.ui.basic_color);
+    if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
+        remember_face_selection(&mut app.ui.basic_color, doc);
+    }
     if kind == FaceJobKind::Apply {
         let count = faces.to_string();
         let message = crate::i18n::fmt(tl!(text::FACE_STATUS), &[("faces", &count)]);
@@ -427,6 +537,9 @@ fn finish_face_error(app: &mut PhotocraftApp, error: String) {
         app.ui.basic_color.face_choices = 0;
         app.ui.basic_color.face_boxes.clear();
         prune_selected_faces(&mut app.ui.basic_color);
+        if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
+            remember_face_selection(&mut app.ui.basic_color, doc);
+        }
     }
     if error.contains("no face found") || error.contains("not found") {
         set_status(&mut app.ui.basic_color, tl!(text::NO_FACE).to_string(), true);
@@ -628,6 +741,7 @@ fn face_row(
             actions.push(Action::FaceSelectionChanged);
         }
     }
+    ui.add(egui::Label::new(egui::RichText::new(tl!(text::FACE_KEYS_HINT)).size(10.5).color(t.text_faint)).wrap());
 }
 
 /// A compact checkbox for the Mask header row: a 12-point box and a 10.5-point label, so the row
@@ -755,6 +869,9 @@ pub(crate) fn draw_face_boxes(app: &mut PhotocraftApp, ui: &egui::Ui, painter: &
             let message = crate::i18n::fmt(tl!(text::FACE_BOX_SELECTED), &[("n", &n.to_string())]);
             set_status(&mut app.ui.basic_color, message, false);
         }
+        if let Some(doc) = app.session.active().map(|st| st.doc.id.0) {
+            remember_face_selection(&mut app.ui.basic_color, doc);
+        }
     }
 }
 
@@ -769,13 +886,21 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if let Some(info) = &active {
         let key = app.session.active().map(|st| (st.doc.id.0, info.id));
         if app.ui.basic_color.face_scan_key != key && !app.ui.basic_color.face_busy {
+            // Remember the image being left before the face state resets, then bring back the
+            // selection of the image being switched to (empty: every detected face).
+            if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
+                remember_face_selection(&mut app.ui.basic_color, doc);
+            }
             app.ui.basic_color.face_choices = 0;
             app.ui.basic_color.face_boxes.clear();
-            app.ui.basic_color.selected_faces.clear();
+            app.ui.basic_color.selected_faces = key.map_or_else(Vec::new, |(doc, _)| recalled_face_selection(&app.ui.basic_color, doc));
             let choice = app.ui.basic_color.face_choice;
             app.ui.basic_color.face_choice = if choice == 1 || choice == MULTI_FACE { choice } else { 0 };
             app.ui.basic_color.face_scan_key = key;
         }
+    }
+    if active.is_some() {
+        face_keys(app, ctx);
     }
     let mut face_choice = app.ui.basic_color.face_choice;
     let face_choices = app.ui.basic_color.face_choices;
@@ -896,6 +1021,10 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     app.ui.basic_color.face_coverage = face_coverage;
     app.ui.basic_color.selected_faces = selected_faces;
     app.ui.basic_color.face_boxes_visible = face_boxes_visible;
+    // A checkbox toggle or a shortcut changed the selection this frame: keep the image's map in step.
+    if let Some(doc) = face_selection_doc(&app.ui.basic_color) {
+        remember_face_selection(&mut app.ui.basic_color, doc);
+    }
     for action in actions {
         apply(app, action);
     }
@@ -928,6 +1057,11 @@ mod tests {
         session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
         let mut app = PhotocraftApp::new(session, crate::Services::default());
         app.ui.panels.basic_color = true;
+        panel_harness(app, size)
+    }
+
+    /// A harness that draws only the panel, over an app that already holds its documents.
+    fn panel_harness(app: PhotocraftApp, size: egui::Vec2) -> egui_kittest::Harness<'static, PhotocraftApp> {
         let mut h = Harness::builder().with_size(size).build_ui_state(
             |ui, app: &mut PhotocraftApp| {
                 let ctx = ui.ctx().clone();
@@ -1510,5 +1644,122 @@ mod tests {
         assert_eq!(title, "Chỉnh màu");
         assert_eq!(create, "Tạo lớp Chỉnh màu");
         assert_eq!(white_balance, "Cân bằng trắng");
+    }
+
+    /// The multi-face selection is remembered per image while the app is open: switching documents
+    /// keeps each image's own selection, and coming back restores it.
+    #[test]
+    fn face_selection_is_remembered_per_document() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("first document");
+        session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let first = session.active().expect("first document").doc.id.0;
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("second document");
+        session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let second = session.active().expect("second document").doc.id.0;
+        assert_ne!(first, second);
+        session.execute("document.activate", json!({"document": 0})).expect("first document active");
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.ui.panels.basic_color = true;
+        let mut h = panel_harness(app, vec2(1440.0, 900.0));
+        assert_eq!(h.state().ui.basic_color.face_scan_key.map(|k| k.0), Some(first), "the panel keyed the first document");
+        // Two scanned faces on the first image, with face 1 unchecked.
+        h.state_mut().ui.basic_color.face_choices = 2;
+        h.state_mut().ui.basic_color.face_boxes = vec![[8, 8, 20, 20], [36, 36, 20, 20]];
+        h.state_mut().ui.basic_color.selected_faces = vec![2];
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.face_selections.get(&first), Some(&vec![2]), "the first image remembers its choice");
+        // Switch images: the second starts with all faces, the first keeps its choice.
+        h.state_mut().run("document.activate", json!({"document": 1})).expect("second document active");
+        h.run_steps(2);
+        assert!(h.state().ui.basic_color.selected_faces.is_empty(), "a new image starts with all faces");
+        assert_eq!(h.state().ui.basic_color.face_selections.get(&first), Some(&vec![2]), "the first image keeps its choice");
+        // Back to the first image: its selection comes back.
+        h.state_mut().run("document.activate", json!({"document": 0})).expect("first document active");
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.selected_faces, vec![2], "the first image's selection is restored");
+    }
+
+    /// Alt+1…9 pick or toggle a numbered face, and Alt+0 goes back to every face.
+    #[test]
+    fn alt_digits_pick_and_toggle_numbered_faces() {
+        let mut h = harness(vec2(1440.0, 900.0));
+        h.state_mut().ui.basic_color.face_choices = 2;
+        h.state_mut().ui.basic_color.face_boxes = vec![[8, 8, 20, 20], [36, 36, 20, 20]];
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num2);
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.face_choice, 3, "Alt+2 picks face 2 in single-face mode");
+        assert!(h.state().ui.basic_color.status.contains("2"));
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num0);
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.face_choice, 0, "Alt+0 goes back to All faces in single-face mode");
+        // In multi mode the same key toggles the box.
+        h.state_mut().ui.basic_color.face_choice = MULTI_FACE;
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num1);
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.selected_faces, vec![2], "Alt+1 unchecks face 1 from all faces");
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num1);
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.selected_faces, vec![1, 2], "Alt+1 checks it again");
+        // Alt+0 selects every face, keeping multi mode with an empty (= all) selection.
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num0);
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.face_choice, MULTI_FACE, "Alt+0 keeps the multi-face mode");
+        assert!(h.state().ui.basic_color.selected_faces.is_empty(), "an empty multi selection is every face");
+        assert!(
+            h.state().ui.basic_color.status == text::ALL_FACES_SELECTED || h.state().ui.basic_color.status == "Đã chọn tất cả khuôn mặt.",
+            "{}",
+            h.state().ui.basic_color.status
+        );
+    }
+
+    /// A focused text field keeps its Alt+digit keys: typing never changes the face selection.
+    #[test]
+    fn alt_digits_are_not_intercepted_while_typing() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("new document");
+        session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let doc = session.active().expect("document").doc.id.0;
+        let layer = session.active().and_then(|st| st.active_layer).expect("active layer");
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.ui.panels.basic_color = true;
+        app.ui.basic_color.face_choices = 2;
+        app.ui.basic_color.face_boxes = vec![[8, 8, 20, 20], [36, 36, 20, 20]];
+        app.ui.basic_color.face_scan_key = Some((doc, layer));
+        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                ui.text_edit_singleline(&mut app.ui.status).request_focus();
+                window(app, ui.ctx());
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(3);
+        assert!(h.ctx.text_edit_focused(), "the field has the keyboard");
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num2);
+        h.run_steps(2);
+        assert_eq!(h.state().ui.basic_color.face_choice, 0, "typing keeps the face choice");
+        assert!(h.state().ui.basic_color.selected_faces.is_empty());
+    }
+
+    /// A scan that finds fewer faces prunes the remembered selection too, not only the live one.
+    #[test]
+    fn a_scan_result_prunes_the_remembered_selection() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("new document");
+        session.execute("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let doc = session.active().expect("document").doc.id.0;
+        let layer = session.active().and_then(|st| st.active_layer).expect("active layer");
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.ui.basic_color.face_scan_key = Some((doc, layer));
+        app.ui.basic_color.selected_faces = vec![2, 3];
+        finish_face_result(&mut app, FaceJobKind::Scan, layer, json!({"faces": 2, "boxes": [[0, 0, 10, 10], [20, 20, 10, 10]]}));
+        assert_eq!(app.ui.basic_color.selected_faces, vec![2], "face 3 no longer exists");
+        assert_eq!(app.ui.basic_color.face_selections.get(&doc), Some(&vec![2]), "the image's map is pruned too");
     }
 }
