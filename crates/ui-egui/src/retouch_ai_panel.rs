@@ -1310,9 +1310,7 @@ mod tests {
         let back: RetouchAiState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
         // A custom brush strength and even-tone choice survive a relaunch.
-        let mut custom = RetouchAiState::default();
-        custom.skin_smooth_amount = 42.0;
-        custom.skin_smooth_even = false;
+        let custom = RetouchAiState { skin_smooth_amount: 42.0, skin_smooth_even: false, ..Default::default() };
         let back: RetouchAiState = serde_json::from_str(&serde_json::to_string(&custom).expect("serialize")).expect("deserialize");
         assert_eq!(custom, back);
         // An older layout without the field gets the whole default state.
@@ -1324,8 +1322,7 @@ mod tests {
         assert_eq!(older.skin_smooth_amount, 65.0);
         assert!(older.skin_smooth_even);
         // Hand-edited layouts are clamped into the slider's range.
-        let mut clamped = RetouchAiState::default();
-        clamped.skin_smooth_amount = 500.0;
+        let mut clamped = RetouchAiState { skin_smooth_amount: 500.0, ..Default::default() };
         clamped.ensure_tools();
         assert_eq!(clamped.skin_smooth_amount, 100.0);
         clamped.skin_smooth_amount = 1.0;
