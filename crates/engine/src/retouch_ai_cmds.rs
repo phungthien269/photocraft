@@ -1013,7 +1013,10 @@ where
 /// A soft-skin copy with a hidden mask. The panel switches to the Brush with this mask targeted,
 /// so painting reveals the smoothing exactly where the user paints. Pixels outside the detected
 /// skin keep the source colour, so a stroke over non-skin has no visible effect.
-fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32) -> Outcome {
+///
+/// `even_tone` also pulls the Lab chroma toward the skin mean (the Skin Tone maths), weighted by
+/// the same strength and coverage, so the layer holds smoothing and evenness as one result.
+fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32, even_tone: bool) -> Outcome {
     let Some(src) = ctx.source.surface() else {
         return skipped("source layer has no pixels");
     };
@@ -1040,6 +1043,9 @@ fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32) -> Outcome {
             if k > 0.0 {
                 for c in 0..3 {
                     q[c] = (p[c] + (smooth[c][i] - p[c]) * k).clamp(0.0, 1.0);
+                }
+                if even_tone && let Some(mean) = ctx.analysis.skin_lab {
+                    q = even_skin_tone(q, mean, k);
                 }
             }
             out_rgba.push(q);
@@ -1379,22 +1385,24 @@ fn dodge_burn_layer(ctx: &Ctx<'_>, amount: f32) -> Outcome {
     })
 }
 
+/// Pull a pixel's Lab chroma toward the skin mean (less blotchy red/blue), keep most of the local
+/// lightness and take a little yellow out. `k` is the effect strength in 0..1.
+fn even_skin_tone(src: [f32; 4], mean: [f32; 3], k: f32) -> [f32; 4] {
+    let c = [src[0], src[1], src[2]];
+    let lab = srgb_to_lab(c);
+    let kk = k.clamp(0.0, 1.0);
+    let l = lab[0] + (mean[0] - lab[0]) * 0.18 * kk;
+    let a = lab[1] + (mean[1] - lab[1]) * 0.55 * kk;
+    let b = lab[2] + (mean[2] - lab[2]) * 0.45 * kk - 1.1 * kk;
+    let out = lab_to_srgb([l.clamp(0.0, 100.0), a, b]);
+    [src[0] + (out[0] - src[0]) * 0.8 * kk, src[1] + (out[1] - src[1]) * 0.8 * kk, src[2] + (out[2] - src[2]) * 0.8 * kk, src[3]]
+}
+
 fn skin_tone_layer(ctx: &Ctx<'_>, amount: f32) -> Outcome {
     let Some(mean) = ctx.analysis.skin_lab else {
         return skipped("no skin found");
     };
-    field_layer(ctx, Tool::SkinTone, &ctx.analysis.skin, amount, |src, _m, k, _x, _y| {
-        let c = [src[0], src[1], src[2]];
-        let lab = srgb_to_lab(c);
-        let kk = k.clamp(0.0, 1.0);
-        // Pull a/b toward the skin's mean (less blotchy red/blue), keep most of the local
-        // lightness and take a little yellow out.
-        let l = lab[0] + (mean[0] - lab[0]) * 0.18 * kk;
-        let a = lab[1] + (mean[1] - lab[1]) * 0.55 * kk;
-        let b = lab[2] + (mean[2] - lab[2]) * 0.45 * kk - 1.1 * kk;
-        let out = lab_to_srgb([l.clamp(0.0, 100.0), a, b]);
-        [src[0] + (out[0] - src[0]) * 0.8 * kk, src[1] + (out[1] - src[1]) * 0.8 * kk, src[2] + (out[2] - src[2]) * 0.8 * kk, src[3]]
-    })
+    field_layer(ctx, Tool::SkinTone, &ctx.analysis.skin, amount, |src, _m, k, _x, _y| even_skin_tone(src, mean, k))
 }
 
 fn mattifier_layer(ctx: &Ctx<'_>, amount: f32) -> Outcome {
@@ -1585,7 +1593,7 @@ fn build_tool(ctx: &Ctx<'_>, tool: Tool, amount: f32, reference: Option<&LabStat
         Tool::SkinTone => skin_tone_layer(ctx, amount),
         Tool::Mattifier => mattifier_layer(ctx, amount),
         Tool::SkinMask => skin_mask_layer(ctx),
-        Tool::SkinSmooth => skin_smooth_layer(ctx, amount),
+        Tool::SkinSmooth => skin_smooth_layer(ctx, amount, true),
         Tool::PortraitVolumes => portrait_volumes(ctx, amount),
         Tool::EyeBrilliance => eye_brilliance_layer(ctx, amount),
         Tool::EyeVessels => eye_vessels_layer(ctx, amount),
@@ -1692,6 +1700,7 @@ fn skin_smooth_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     if amount <= 0.0 {
         return Err(bad(SKIN_SMOOTH, "`amount` must be greater than 0"));
     }
+    let even_tone = bool_param(p, "evenTone", true, SKIN_SMOOTH)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let source_id = source_layer_id(s, p, SKIN_SMOOTH)?;
     let source = d.doc.layer(source_id).ok_or(EngineError::NoLayer(source_id))?;
@@ -1700,7 +1709,7 @@ fn skin_smooth_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let analysis = analyze(&d.doc, Some(source_id), true)?;
     let ctx = Ctx { doc: &d.doc, source, fmt: d.doc.pixel_format(), analysis: &analysis, selection: d.doc.selection.as_ref(), selection_only: false };
-    match skin_smooth_layer(&ctx, amount) {
+    match skin_smooth_layer(&ctx, amount, even_tone) {
         Outcome::Layer(layer) => {
             let name = layer.name.clone();
             let id = s.edit("Skin Smooth Brush", |doc, active| {
@@ -2042,7 +2051,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Retouch AI: Skin Smooth Brush",
             menu: &[],
             shortcut: None,
-            params: r##"{"layer":id? (pixel source; default active layer),"amount":0..100=65} → {"layer":id,"name":str} (creates a soft-skin copy with a hidden mask; paint on the mask to reveal it)"##,
+            params: r##"{"layer":id? (pixel source; default active layer),"amount":0..100=65,"evenTone":bool=true} → {"layer":id,"name":str} (creates a soft-skin copy with a hidden mask; evenTone also evens the skin colour; paint on the mask to reveal it)"##,
             enabled: has_doc,
             run: skin_smooth_cmd,
             journal: true,
@@ -2447,6 +2456,50 @@ mod tests {
         assert_eq!(before, pixels_of(&s, source), "the source pixels stay unchanged");
         s.execute("edit.undo", json!({})).unwrap();
         assert!(s.active().unwrap().doc.layer(id).is_none(), "one undo removes the brush layer");
+    }
+
+    #[test]
+    fn skin_smooth_even_tone_is_optional_and_defaults_on() {
+        let mut s = synthetic_session(SampleType::U8);
+        let source = s.active().unwrap().doc.layers[0].id;
+        let source_id = source.0;
+        let before = pixels_of(&s, source);
+        let plain = s.execute(SKIN_SMOOTH, json!({"layer": source_id, "amount": 70, "evenTone": false})).unwrap();
+        let plain_id = LayerId(plain["layer"].as_u64().unwrap());
+        let even = s.execute(SKIN_SMOOTH, json!({"layer": source_id, "amount": 70, "evenTone": true})).unwrap();
+        let even_id = LayerId(even["layer"].as_u64().unwrap());
+        // Omitting `evenTone` keeps the documented default (on).
+        let default = s.execute(SKIN_SMOOTH, json!({"layer": source_id, "amount": 70})).unwrap();
+        let default_id = LayerId(default["layer"].as_u64().unwrap());
+
+        let (ch, bbox) = {
+            let d = s.active().unwrap();
+            (d.doc.pixel_format().channels(), d.doc.layer(even_id).unwrap().surface().unwrap().content_bounds())
+        };
+        let at = |x: i32, y: i32| (y as usize * 192 + x as usize) * ch;
+        let plain_px = pixels_of(&s, plain_id);
+        let even_px = pixels_of(&s, even_id);
+        let default_px = pixels_of(&s, default_id);
+        let skin = at(96, 78);
+        assert_ne!(&before[skin..skin + 3], &plain_px[skin..skin + 3], "evenTone:false still smooths the skin");
+        assert_ne!(&plain_px[skin..skin + 3], &even_px[skin..skin + 3], "evenTone must change the skin colour");
+        assert_eq!(even_px, default_px, "evenTone defaults to true");
+
+        // The bbox corner is outside the skin ellipse: the tone pass must not touch it.
+        let corner = at(bbox.x0 + 1, bbox.y0 + 1);
+        assert_eq!(&before[corner..corner + ch], &even_px[corner..corner + ch], "non-skin pixels keep the source colour");
+        assert_eq!(&before[corner..corner + ch], &plain_px[corner..corner + ch]);
+
+        let hidden = {
+            let d = s.active().unwrap();
+            d.doc.layer(even_id).unwrap().mask.as_ref().expect("smooth layer has a mask").value(96, 78)
+        };
+        assert!(hidden < 0.01, "the mask starts hidden for the brush");
+        assert_eq!(before, pixels_of(&s, source), "the source pixels stay unchanged");
+
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(s.active().unwrap().doc.layer(default_id).is_none(), "one undo removes the brush layer");
+        assert!(s.active().unwrap().doc.layer(even_id).is_some(), "only the last layer is undone");
     }
 
     #[test]

@@ -44,6 +44,8 @@ mod text {
     pub const RUN_SELECTED: &str = "Run Selected";
     pub const SKIN_SMOOTH_BRUSH: &str = "Skin Smooth Brush";
     pub const SKIN_SMOOTH_READY: &str = "Skin Smooth brush ready. Paint where the skin should look smoother.";
+    pub const SKIN_SMOOTH_STRENGTH: &str = "Strength";
+    pub const SKIN_SMOOTH_EVEN: &str = "Even skin tone";
     pub const SELECTION_ONLY: &str = "Selection only";
     pub const SELECTION_ONLY_HINT: &str = "Paint a selection first (Lasso or Selection Brush); the tools run only inside it.";
 
@@ -148,6 +150,8 @@ mod text {
         RUN_SELECTED,
         SKIN_SMOOTH_BRUSH,
         SKIN_SMOOTH_READY,
+        SKIN_SMOOTH_STRENGTH,
+        SKIN_SMOOTH_EVEN,
         SELECTION_ONLY,
         SELECTION_ONLY_HINT,
         PRESET,
@@ -426,6 +430,10 @@ pub struct RetouchAiState {
     pub last_preset: String,
     /// Run every tool only inside the selection the user painted.
     pub selection_only: bool,
+    /// Skin Smooth Brush strength, 5..100 (clamped by `ensure_tools`).
+    pub skin_smooth_amount: f32,
+    /// Skin Smooth Brush also evens the skin colour inside the same layer.
+    pub skin_smooth_even: bool,
     /// The Save field's text.
     pub preset_name: String,
     pub batch_input: String,
@@ -457,6 +465,8 @@ impl Default for RetouchAiState {
             presets: Vec::new(),
             last_preset: CUSTOM.into(),
             selection_only: false,
+            skin_smooth_amount: 65.0,
+            skin_smooth_even: true,
             preset_name: String::new(),
             batch_input: String::new(),
             batch_output: String::new(),
@@ -523,6 +533,7 @@ impl RetouchAiState {
             tools.push(tool);
         }
         self.tools = tools;
+        self.skin_smooth_amount = if self.skin_smooth_amount.is_finite() { self.skin_smooth_amount.clamp(5.0, 100.0) } else { 65.0 };
         self.batch_format = match self.batch_format.as_str() {
             "jpg" | "png" | "tiff" => self.batch_format.clone(),
             _ => "same".into(),
@@ -763,7 +774,12 @@ fn run_skin_smooth_brush(app: &mut PhotocraftApp) {
         set_status(&mut app.ui.retouch_ai, tl!(text::OPEN_IMAGE_TO_START).into(), true);
         return;
     };
-    match app.run("retouchAI.skinSmooth", json!({"amount": 65})) {
+    let (amount, even_tone) = {
+        let state = &app.ui.retouch_ai;
+        let amount = if state.skin_smooth_amount.is_finite() { state.skin_smooth_amount.clamp(5.0, 100.0) } else { 65.0 };
+        (amount, state.skin_smooth_even)
+    };
+    match app.run("retouchAI.skinSmooth", json!({"amount": amount, "evenTone": even_tone})) {
         Ok(value) => {
             let layer = value.get("layer").and_then(Value::as_u64).unwrap_or(0);
             let name = value.get("name").and_then(Value::as_str).unwrap_or("Retouch • Skin Smooth").to_string();
@@ -1213,6 +1229,18 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                                 actions.push(Action::SkinSmoothBrush);
                             }
                             brush.on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_STRENGTH)).size(11.0).color(t.text_dim));
+                                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
+                                ui.add(egui::Slider::new(&mut state.skin_smooth_amount, 5.0..=100.0).show_value(false).suffix("%"))
+                                    .on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                ui.add(egui::Checkbox::new(&mut state.skin_smooth_even, tl!(text::SKIN_SMOOTH_EVEN))).on_hover_text(tl!(text::HINT_SKIN_TONE));
+                            });
+                            ui.add_space(2.0);
                         }
                         if index == 2 {
                             reference_row(ui, state, &mut actions);
@@ -1267,6 +1295,8 @@ mod tests {
     fn default_state_selects_the_expected_tools_and_round_trips_through_serde() {
         let state = RetouchAiState::default();
         assert!(!state.selection_only, "selection-only starts off");
+        assert_eq!(state.skin_smooth_amount, 65.0, "the skin smooth brush starts at 65");
+        assert!(state.skin_smooth_even, "even skin tone starts on");
         assert_eq!(state.tools.len(), TOOLS.len());
         for id in ["heal", "dodgeBurn", "skinTone", "eyeBrilliance", "teeth"] {
             let tool = state.tool(id).unwrap_or_else(|| panic!("{id} missing"));
@@ -1279,9 +1309,31 @@ mod tests {
         let json = serde_json::to_string(&state).expect("serialize");
         let back: RetouchAiState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
+        // A custom brush strength and even-tone choice survive a relaunch.
+        let mut custom = RetouchAiState::default();
+        custom.skin_smooth_amount = 42.0;
+        custom.skin_smooth_even = false;
+        let back: RetouchAiState = serde_json::from_str(&serde_json::to_string(&custom).expect("serialize")).expect("deserialize");
+        assert_eq!(custom, back);
         // An older layout without the field gets the whole default state.
         let fresh: RetouchAiState = serde_json::from_str("{}").expect("missing fields default");
         assert_eq!(fresh, RetouchAiState::default());
+        // Older layouts that predate the brush controls get the documented defaults.
+        let older: RetouchAiState = serde_json::from_str(r#"{"selectionOnly":true}"#).expect("older layout");
+        assert!(older.selection_only);
+        assert_eq!(older.skin_smooth_amount, 65.0);
+        assert!(older.skin_smooth_even);
+        // Hand-edited layouts are clamped into the slider's range.
+        let mut clamped = RetouchAiState::default();
+        clamped.skin_smooth_amount = 500.0;
+        clamped.ensure_tools();
+        assert_eq!(clamped.skin_smooth_amount, 100.0);
+        clamped.skin_smooth_amount = 1.0;
+        clamped.ensure_tools();
+        assert_eq!(clamped.skin_smooth_amount, 5.0);
+        clamped.skin_smooth_amount = f32::NAN;
+        clamped.ensure_tools();
+        assert_eq!(clamped.skin_smooth_amount, 65.0);
     }
 
     #[test]
@@ -1390,6 +1442,8 @@ mod tests {
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
         h.run_steps(4);
         assert!(h.query_all_by_label("Skin Smooth Brush").next().is_some(), "the brush action is offered in Skin & Face");
+        assert!(h.query_all_by_label("Strength").next().is_some(), "the brush strength slider is under the button");
+        assert!(h.query_all_by_label("Even skin tone").next().is_some(), "the even-tone checkbox is under the button");
     }
 
     /// The panel's data keys skip the literal scanner (the other complete catalogs fall back to
