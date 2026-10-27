@@ -1210,8 +1210,9 @@ fn process_outputs_with<'a>(
     let mut created: Vec<String> = Vec::new();
     let mut cancelled = false;
     for (i, (path, out)) in outputs.into_iter().enumerate() {
-        // Pausing and cancellation are checked between files: a render already started finishes,
-        // so a pause takes effect after the current file, never mid-render.
+        // Pausing and cancellation are checked between files. The scratch session also carries
+        // the batch's context into each step (below), so a command that calls `JobCtx::check`
+        // stops at its next safe point mid-file instead of finishing the file first.
         if let Some(c) = ctl
             && c.wait_if_paused().is_err()
         {
@@ -1226,6 +1227,11 @@ fn process_outputs_with<'a>(
             written.check(&out).map_err(EngineError::Other)?;
             let bytes = read_file(path)?;
             let mut scratch = Session::new();
+            // Steps that check the job context pause mid-file too. The session is dropped with
+            // the file, so the context goes with it.
+            if let Some(c) = ctl {
+                scratch.set_inline_job_ctx(Some(c.clone()));
+            }
             let doc = import(&file_name(path), &bytes)?;
             scratch.add_document(doc, Some(path.to_string()));
             f(&mut scratch)?;

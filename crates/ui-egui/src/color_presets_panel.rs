@@ -88,9 +88,9 @@ pub(crate) mod text {
     pub const RUNNING: &str = "Running…";
     pub const PAUSE: &str = "Pause";
     pub const RESUME: &str = "Resume";
-    pub const PAUSED: &str = "Paused after the current file.";
+    pub const PAUSED: &str = "Paused at the next safe point.";
     pub const RESUMING: &str = "Resuming…";
-    pub const PAUSE_HINT: &str = "Pause takes effect after the current file finishes.";
+    pub const PAUSE_HINT: &str = "Pause takes effect at the next safe point, which may be mid-file.";
     pub const SELECT_PRESET: &str = "Select a preset first.";
     pub const CHOOSE_FOLDERS: &str = "Choose both an input and an output folder.";
     pub const CHOOSE_DIFFERENT: &str = "Choose a different output folder.";
@@ -184,7 +184,7 @@ pub struct ColorPresetsState {
     pub batch_progress: f32,
     #[serde(skip)]
     pub batch_message: String,
-    /// The running batch is paused (it stops after the current file). Session-only.
+    /// The running batch is paused (it stops at its next safe point). Session-only.
     #[serde(skip)]
     pub batch_paused: bool,
 }
@@ -622,7 +622,8 @@ fn finish_batch_error(app: &mut PhotocraftApp, error: &str) {
 }
 
 /// Run a validated batch as a background job (on the frame after [`queue_batch`], once the busy
-/// state is painted). The engine reports per-file progress and checks cancellation between files.
+/// state is painted). The engine reports per-file progress and checks pause and cancellation
+/// between files, and inside a file at its next safe point.
 fn execute_batch(app: &mut PhotocraftApp, params: Value) {
     match app.session.start("file.automate.batch", params) {
         Ok(Started::Job(id)) => {

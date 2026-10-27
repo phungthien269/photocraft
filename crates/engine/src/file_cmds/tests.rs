@@ -1046,6 +1046,31 @@ fn batch_cleanup_on_cancel_is_opt_in_and_stops_before_the_next_file() {
 }
 
 #[test]
+fn batch_installs_the_job_ctx_in_each_file_session() {
+    let dir = tmp("batch-inline-ctx");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    png(&input, "a.png", 8, 8, "#ff0000");
+    let out = join(&dir, "out");
+    let inputs = vec![BatchInput { path: join(&input, "a.png"), rel_dir: String::new() }];
+    let ctx = crate::jobs::JobCtx::new();
+    let saw_cancel = std::sync::atomic::AtomicBool::new(false);
+    let run = |scratch: &mut Session| {
+        // Cancel the job while the file runs, then run a step that reads the context through the
+        // scratch session: it stops with `Cancelled` instead of finishing and saving the file.
+        ctx.cancel();
+        let r = scratch.execute("filter.blur.gaussianBlur", json!({"radius": 2}));
+        saw_cancel.store(matches!(&r, Err(EngineError::Cancelled)), std::sync::atomic::Ordering::Relaxed);
+        r.map(|_| ())
+    };
+    let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), BatchRunOpts::default());
+    assert!(saw_cancel.load(std::sync::atomic::Ordering::Relaxed), "the file session shares the batch job's context: {r}");
+    assert_eq!(r["files"], json!([]), "{r}");
+    assert_eq!(r["errors"].as_array().unwrap().len(), 1, "{r}");
+    assert!(!std::path::Path::new(&join(&out, "a.png")).exists(), "the cancelled file was not written");
+}
+
+#[test]
 fn color_lookup_table_bakes_the_adjustment_stack() {
     let mut s = session(8, 8, 8);
     assert!(!s.is_enabled("file.export.colorLookupTables"));

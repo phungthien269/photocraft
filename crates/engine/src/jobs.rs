@@ -14,9 +14,10 @@
 //!   On wasm `start` runs inline (same API, written once).
 //! - [`Session::cancel_job`] sets the flag; the algorithms check it per tile, row band or
 //!   iteration, and the result is discarded. The document is never touched by a worker.
-//! - [`Session::pause_job`] pauses a job between work units (the Batch command waits between
-//!   files, so the file being rendered finishes); [`Session::resume_job`] continues it, and a
-//!   cancel while paused wakes the worker with `Err(Cancelled)`.
+//! - [`Session::pause_job`] pauses a job at its next safe point: between work units, or inside
+//!   the current batch file at a command's next [`JobCtx::check`] (the batch's context reaches
+//!   each file's scratch session); [`Session::resume_job`] continues it, and a cancel while
+//!   paused wakes the worker with `Err(Cancelled)`.
 //! - A panic in the worker becomes an error; the document is unchanged.
 //! - While a job runs on a document, commands that would edit that document are disabled with a
 //!   message naming the job (queries and document-independent commands still run).
@@ -83,7 +84,7 @@ pub struct JobCtx {
 #[derive(Default)]
 struct Shared {
     cancel: AtomicBool,
-    /// The job is asked to pause between work units (see [`JobCtx::wait_if_paused`]).
+    /// The job is asked to pause at its next safe point (see [`JobCtx::check`]).
     pause: AtomicBool,
     /// Guards pause transitions and wakes a worker blocked in [`JobCtx::wait_if_paused`]. A
     /// resume takes it before clearing the flag, so a worker cannot miss the wake between its
@@ -135,13 +136,13 @@ impl JobCtx {
         self.shared.wake.notify_all();
     }
 
-    /// Is the job paused? Work already in progress runs on to its next
-    /// [`JobCtx::wait_if_paused`] (a batch file finishes rendering).
+    /// Is the job paused? Work already in progress runs on to its next [`JobCtx::check`] (a
+    /// command can stop mid-file, at its own safe point).
     pub fn paused(&self) -> bool {
         self.shared.pause.load(Ordering::Relaxed)
     }
 
-    /// Ask the job to pause before its next work unit (idempotent).
+    /// Ask the job to pause at its next safe point (idempotent).
     pub fn pause(&self) {
         let _gate = self.shared.pause_gate.lock().unwrap_or_else(PoisonError::into_inner);
         self.shared.pause.store(true, Ordering::Relaxed);
@@ -154,11 +155,12 @@ impl JobCtx {
         self.shared.wake.notify_all();
     }
 
-    /// Block while the job is paused, at a point where stopping is safe (between batch files).
-    /// `Err(Cancelled)` when it was cancelled while paused; otherwise `Ok(())` once running.
+    /// Block while the job is paused, at a point where stopping is safe (a batch file boundary,
+    /// or a command's own checkpoint). `Err(Cancelled)` when it was cancelled while paused;
+    /// otherwise `Ok(())` once running.
     pub fn wait_if_paused(&self) -> Result<()> {
         if !self.paused() {
-            return self.check();
+            return self.check_cancelled();
         }
         let mut gate = self.shared.pause_gate.lock().unwrap_or_else(PoisonError::into_inner);
         while self.shared.pause.load(Ordering::Relaxed) {
@@ -168,11 +170,19 @@ impl JobCtx {
             gate = self.shared.wake.wait(gate).unwrap_or_else(PoisonError::into_inner);
         }
         drop(gate);
-        self.check()
+        self.check_cancelled()
     }
 
-    /// `Err(Cancelled)` once cancelled, for `?` between stages.
+    /// `Err(Cancelled)` once cancelled, for `?` between stages. Pauses first when the job is
+    /// paused: this is a safe point, so a worker waits here until [`JobCtx::resume`] and returns
+    /// `Err(Cancelled)` if it was cancelled while paused.
     pub fn check(&self) -> Result<()> {
+        self.wait_if_paused()
+    }
+
+    /// The cancellation test alone, so [`JobCtx::check`] and [`JobCtx::wait_if_paused`] don't
+    /// recurse into each other.
+    fn check_cancelled(&self) -> Result<()> {
         if self.cancelled() { Err(EngineError::Cancelled) } else { Ok(()) }
     }
 
@@ -230,7 +240,7 @@ pub struct JobInfo {
     /// `running`, `done`, `failed` or `cancelled`.
     pub state: &'static str,
     pub progress: f32,
-    /// The job is paused between work units (a batch pauses after the current file).
+    /// The job is paused at its next safe point (a batch may stop mid-file).
     pub paused: bool,
     pub message: String,
     pub elapsed_ms: f64,
@@ -701,9 +711,9 @@ impl Session {
         true
     }
 
-    /// Pause job `id` before its next work unit (a batch pauses after the current file). The job
-    /// keeps its place and its result; [`Session::resume_job`] continues it. False if no such job
-    /// is running.
+    /// Pause job `id` at its next safe point (between work units, or inside the current batch
+    /// file at a command's next check). The job keeps its place and its result;
+    /// [`Session::resume_job`] continues it. False if no such job is running.
     pub fn pause_job(&mut self, id: JobId) -> bool {
         match self.jobs.running.iter().find(|r| r.id == id) {
             Some(job) => {

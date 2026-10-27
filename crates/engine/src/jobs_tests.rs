@@ -222,6 +222,42 @@ fn pause_resume_and_wait_if_paused() {
     assert!(matches!(ctx.wait_if_paused(), Err(EngineError::Cancelled)));
 }
 
+/// `check` is a safe point too: a paused job waits there until resumed, and a cancel wakes it.
+#[test]
+fn check_pauses_a_worker_until_resume_and_cancel_wakes_it() {
+    let ctx = JobCtx::new();
+    ctx.pause();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let waiter = ctx.clone();
+    let t = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let _ = done_tx.send(waiter.check());
+    });
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err(), "a paused check waits");
+    ctx.resume();
+    assert!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap().is_ok(), "resume continues the job");
+    t.join().unwrap();
+
+    // A worker already waiting in check wakes with the stop signal when cancelled.
+    ctx.pause();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let waiter = ctx.clone();
+    let t = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let _ = done_tx.send(waiter.check());
+    });
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err(), "the paused check waits");
+    ctx.cancel();
+    assert!(matches!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap(), Err(EngineError::Cancelled)));
+    t.join().unwrap();
+    // Already cancelled and paused: no wait.
+    assert!(matches!(ctx.check(), Err(EngineError::Cancelled)));
+}
+
 #[test]
 fn pause_job_and_resume_job_report_the_paused_state() {
     let mut s = session(64, 64);
