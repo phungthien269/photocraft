@@ -182,6 +182,23 @@ fn bool_param(p: &Value, key: &str, default: bool, cmd: &str) -> Result<bool> {
     }
 }
 
+/// An integer parameter in `min..=max`. Numbers outside the range are clamped (the UI sliders
+/// already stop at the ends), while a wrong type or a non-finite number is rejected so a typo
+/// never silently changes the result.
+fn int_param(p: &Value, key: &str, default: u32, min: u32, max: u32, cmd: &str) -> Result<u32> {
+    match p.get(key) {
+        None => Ok(default),
+        Some(Value::Number(n)) => {
+            let v = n.as_f64().ok_or_else(|| bad(cmd, format!("`{key}` must be a number in {min}..{max}")))?;
+            if !v.is_finite() {
+                return Err(bad(cmd, format!("`{key}` must be finite")));
+            }
+            Ok((v.round() as i64).clamp(i64::from(min), i64::from(max)) as u32)
+        }
+        Some(_) => Err(bad(cmd, format!("`{key}` must be a number in {min}..{max}"))),
+    }
+}
+
 fn reference_path(p: &Value, needed: bool) -> Result<Option<String>> {
     match p.get("referencePath") {
         None => {
@@ -1016,7 +1033,9 @@ where
 ///
 /// `even_tone` also pulls the Lab chroma toward the skin mean (the Skin Tone maths), weighted by
 /// the same strength and coverage, so the layer holds smoothing and evenness as one result.
-fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32, even_tone: bool) -> Outcome {
+/// `smooth` turns the guided-filter blur on or off: with it off the layer only evens the tone,
+/// and `radius` sets the guided filter's neighbourhood in pixels.
+fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32, even_tone: bool, smooth: bool, radius: u32) -> Outcome {
     let Some(src) = ctx.source.surface() else {
         return skipped("source layer has no pixels");
     };
@@ -1028,9 +1047,13 @@ fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32, even_tone: bool) -> Outcome {
     let native = src.read_region(bbox);
     let ch = ctx.fmt.channels();
     let rgba: Vec<[f32; 4]> = native.chunks_exact(ch).map(|p| to_rgba(&ctx.fmt, p)).collect();
-    let guide = RgbImage::from_rgba(&rgba, w, h);
-    let channels: [Vec<f32>; 3] = std::array::from_fn(|c| rgba.iter().map(|p| p[c]).collect());
-    let smooth: [Vec<f32>; 3] = std::array::from_fn(|c| matting::guided_filter_color(&guide, &channels[c], 6, 0.02));
+    let blurred: Option<[Vec<f32>; 3]> = if smooth {
+        let guide = RgbImage::from_rgba(&rgba, w, h);
+        let channels: [Vec<f32>; 3] = std::array::from_fn(|c| rgba.iter().map(|p| p[c]).collect());
+        Some(std::array::from_fn(|c| matting::guided_filter_color(&guide, &channels[c], radius as usize, 0.02)))
+    } else {
+        None
+    };
     let strength = (amount / 100.0).clamp(0.0, 1.0);
     let mut out_rgba = Vec::with_capacity(w * h);
     for y in 0..h {
@@ -1041,8 +1064,10 @@ fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32, even_tone: bool) -> Outcome {
             let k = strength * coverage;
             let mut q = p;
             if k > 0.0 {
-                for c in 0..3 {
-                    q[c] = (p[c] + (smooth[c][i] - p[c]) * k).clamp(0.0, 1.0);
+                if let Some(blurred) = &blurred {
+                    for c in 0..3 {
+                        q[c] = (p[c] + (blurred[c][i] - p[c]) * k).clamp(0.0, 1.0);
+                    }
                 }
                 if even_tone && let Some(mean) = ctx.analysis.skin_lab {
                     q = even_skin_tone(q, mean, k);
@@ -1051,7 +1076,8 @@ fn skin_smooth_layer(ctx: &Ctx<'_>, amount: f32, even_tone: bool) -> Outcome {
             out_rgba.push(q);
         }
     }
-    let mut layer = new_layer(&Tool::SkinSmooth.layer_name(), ctx.fmt);
+    let name = if smooth { Tool::SkinSmooth.layer_name() } else { format!("{RESULT_PREFIX}Even Skin Tone") };
+    let mut layer = new_layer(&name, ctx.fmt);
     let out = match crate::pixels_mut(&mut layer) {
         Ok(s) => s,
         Err(e) => return skipped(e.to_string()),
@@ -1593,7 +1619,7 @@ fn build_tool(ctx: &Ctx<'_>, tool: Tool, amount: f32, reference: Option<&LabStat
         Tool::SkinTone => skin_tone_layer(ctx, amount),
         Tool::Mattifier => mattifier_layer(ctx, amount),
         Tool::SkinMask => skin_mask_layer(ctx),
-        Tool::SkinSmooth => skin_smooth_layer(ctx, amount, true),
+        Tool::SkinSmooth => skin_smooth_layer(ctx, amount, true, true, 6),
         Tool::PortraitVolumes => portrait_volumes(ctx, amount),
         Tool::EyeBrilliance => eye_brilliance_layer(ctx, amount),
         Tool::EyeVessels => eye_vessels_layer(ctx, amount),
@@ -1701,6 +1727,11 @@ fn skin_smooth_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(SKIN_SMOOTH, "`amount` must be greater than 0"));
     }
     let even_tone = bool_param(p, "evenTone", true, SKIN_SMOOTH)?;
+    let smooth = bool_param(p, "smooth", true, SKIN_SMOOTH)?;
+    if !smooth && !even_tone {
+        return Err(bad(SKIN_SMOOTH, "`smooth` and `evenTone` cannot both be false; enable at least one effect"));
+    }
+    let radius = int_param(p, "radius", 6, 2, 20, SKIN_SMOOTH)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let source_id = source_layer_id(s, p, SKIN_SMOOTH)?;
     let source = d.doc.layer(source_id).ok_or(EngineError::NoLayer(source_id))?;
@@ -1709,10 +1740,11 @@ fn skin_smooth_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let analysis = analyze(&d.doc, Some(source_id), true)?;
     let ctx = Ctx { doc: &d.doc, source, fmt: d.doc.pixel_format(), analysis: &analysis, selection: d.doc.selection.as_ref(), selection_only: false };
-    match skin_smooth_layer(&ctx, amount, even_tone) {
+    match skin_smooth_layer(&ctx, amount, even_tone, smooth, radius) {
         Outcome::Layer(layer) => {
             let name = layer.name.clone();
-            let id = s.edit("Skin Smooth Brush", |doc, active| {
+            let journal = if smooth { "Skin Smooth Brush" } else { "Even Skin Tone Brush" };
+            let id = s.edit(journal, |doc, active| {
                 let id = doc.insert_above(None, layer);
                 *active = Some(id);
                 Ok(id)
@@ -2083,7 +2115,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Retouch AI: Skin Smooth Brush",
             menu: &[],
             shortcut: None,
-            params: r##"{"layer":id? (pixel source; default active layer),"amount":0..100=65,"evenTone":bool=true} → {"layer":id,"name":str} (creates a soft-skin copy with a hidden mask; evenTone also evens the skin colour; paint on the mask to reveal it)"##,
+            params: r##"{"layer":id? (pixel source; default active layer),"amount":0..100=65,"smooth":bool=true,"evenTone":bool=true,"radius":2..20=6} → {"layer":id,"name":str} (creates a masked brush layer; `radius` is the guided-filter radius, `smooth:false` with `evenTone:true` creates the tone-only "Retouch • Even Skin Tone" layer, and both false is an error; paint on the mask to reveal it)"##,
             enabled: has_doc,
             run: skin_smooth_cmd,
             journal: true,
@@ -2532,6 +2564,80 @@ mod tests {
         s.execute("edit.undo", json!({})).unwrap();
         assert!(s.active().unwrap().doc.layer(default_id).is_none(), "one undo removes the brush layer");
         assert!(s.active().unwrap().doc.layer(even_id).is_some(), "only the last layer is undone");
+    }
+
+    #[test]
+    fn even_tone_only_layer_evens_colour_without_smoothing() {
+        let mut s = synthetic_session(SampleType::U8);
+        let source = s.active().unwrap().doc.layers[0].id;
+        let before = pixels_of(&s, source);
+        let tone = s.execute(SKIN_SMOOTH, json!({"amount": 100, "smooth": false, "evenTone": true})).unwrap();
+        assert_eq!(tone["name"], "Retouch • Even Skin Tone");
+        let tone_id = LayerId(tone["layer"].as_u64().unwrap());
+        let smooth = s.execute(SKIN_SMOOTH, json!({"amount": 100, "smooth": true, "evenTone": false})).unwrap();
+        assert_eq!(smooth["name"], "Retouch • Skin Smooth");
+        let smooth_id = LayerId(smooth["layer"].as_u64().unwrap());
+
+        let ch = s.active().unwrap().doc.pixel_format().channels();
+        let at = |x: i32, y: i32| (y as usize * 192 + x as usize) * ch;
+        let (tone_px, tone_bbox) = {
+            let d = s.active().unwrap();
+            (pixels_of(&s, tone_id), d.doc.layer(tone_id).unwrap().surface().unwrap().content_bounds())
+        };
+        let smooth_px = pixels_of(&s, smooth_id);
+        let skin = at(96, 78);
+        assert_ne!(&before[skin..skin + 3], &tone_px[skin..skin + 3], "the tone pass changes the skin colour");
+        assert_ne!(tone_px, smooth_px, "the tone-only layer must not contain the smoothing");
+
+        // The 3×3 blemish keeps its local contrast in the tone-only layer; the blurred layer
+        // pulls it toward the surrounding skin.
+        let blemish = at(84, 68);
+        let neighbour = at(84, 60);
+        let tone_contrast = tone_px[neighbour] - tone_px[blemish];
+        let smooth_contrast = smooth_px[neighbour] - smooth_px[blemish];
+        assert!(tone_contrast > smooth_contrast + 0.1, "tone-only must not blur the blemish: {tone_contrast} vs {smooth_contrast}");
+        // Non-skin pixels keep the source colour, and the mask still starts hidden for the brush.
+        let corner = at(tone_bbox.x0 + 1, tone_bbox.y0 + 1);
+        assert_eq!(&before[corner..corner + ch], &tone_px[corner..corner + ch], "non-skin pixels keep the source colour");
+        let hidden = s.active().unwrap().doc.layer(tone_id).unwrap().mask.as_ref().expect("tone layer has a mask").value(96, 78);
+        assert!(hidden < 0.01, "the mask starts hidden for the brush");
+        assert_eq!(before, pixels_of(&s, source), "the source pixels stay unchanged");
+
+        // One undo removes the tone layer and leaves the earlier smooth layer.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(s.active().unwrap().doc.layer(smooth_id).is_none());
+        assert!(s.active().unwrap().doc.layer(tone_id).is_some(), "only the last layer is undone");
+    }
+
+    #[test]
+    fn skin_smooth_radius_changes_the_blur_and_clamps() {
+        let mut s = synthetic_session(SampleType::U8);
+        let source_id = s.active().unwrap().doc.layers[0].id.0;
+        let run = |s: &mut Session, radius: Value| {
+            let r = s.execute(SKIN_SMOOTH, json!({"layer": source_id, "amount": 100, "evenTone": false, "radius": radius})).unwrap();
+            pixels_of(s, LayerId(r["layer"].as_u64().unwrap()))
+        };
+        let tight = run(&mut s, json!(2));
+        let wide = run(&mut s, json!(20));
+        assert_ne!(tight, wide, "a wider guided-filter radius must blur a larger neighbourhood");
+        // Out-of-range numbers clamp to the documented 2..20 range.
+        assert_eq!(run(&mut s, json!(1)), tight, "radius 1 clamps to 2");
+        assert_eq!(run(&mut s, json!(100)), wide, "radius 100 clamps to 20");
+        // A missing radius keeps the documented default of 6.
+        let default = s.execute(SKIN_SMOOTH, json!({"layer": source_id, "amount": 100, "evenTone": false})).unwrap();
+        let six = s.execute(SKIN_SMOOTH, json!({"layer": source_id, "amount": 100, "evenTone": false, "radius": 6})).unwrap();
+        assert_eq!(pixels_of(&s, LayerId(default["layer"].as_u64().unwrap())), pixels_of(&s, LayerId(six["layer"].as_u64().unwrap())), "radius defaults to 6");
+        // Wrong types are rejected with a clear error instead of silently falling back.
+        let err = s.execute(SKIN_SMOOTH, json!({"radius": "wide"})).unwrap_err().to_string();
+        assert!(err.contains("`radius`") && err.contains("2..20"), "{err}");
+    }
+
+    #[test]
+    fn skin_smooth_rejects_both_effects_disabled() {
+        let mut s = synthetic_session(SampleType::U8);
+        let err = s.execute(SKIN_SMOOTH, json!({"smooth": false, "evenTone": false})).unwrap_err().to_string();
+        assert!(err.contains("`smooth`") && err.contains("`evenTone`"), "{err}");
+        assert!(!s.active().unwrap().history.can_undo(), "a rejected request must not journal");
     }
 
     #[test]

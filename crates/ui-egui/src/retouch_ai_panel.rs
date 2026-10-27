@@ -44,7 +44,11 @@ mod text {
     pub const RUN_SELECTED: &str = "Run Selected";
     pub const SKIN_SMOOTH_BRUSH: &str = "Skin Smooth Brush";
     pub const SKIN_SMOOTH_READY: &str = "Skin Smooth brush ready. Paint where the skin should look smoother.";
+    pub const EVEN_TONE_BRUSH: &str = "Even Tone Brush";
+    pub const EVEN_TONE_READY: &str = "Even Tone brush ready. Paint to even the skin colour without smoothing.";
     pub const SKIN_SMOOTH_STRENGTH: &str = "Strength";
+    pub const SKIN_SMOOTH_RADIUS: &str = "Effect radius";
+    pub const SKIN_SMOOTH_SOFTNESS: &str = "Brush softness";
     pub const SKIN_SMOOTH_EVEN: &str = "Even skin tone";
     pub const SELECTION_ONLY: &str = "Selection only";
     pub const SELECTION_ONLY_HINT: &str = "Paint a selection first (Lasso or Selection Brush); the tools run only inside it.";
@@ -125,6 +129,10 @@ mod text {
     pub const HINT_DODGE_BURN: &str = "Dodges and burns the skin to soften under-eye shadows and smile lines.";
     pub const HINT_SKIN_TONE: &str = "Evens out the skin tone and reduces redness or color casts.";
     pub const HINT_SKIN_SMOOTH: &str = "Creates a soft-skin layer with a hidden mask, then selects the Brush. Paint white where the skin should look smoother.";
+    pub const HINT_EVEN_TONE: &str =
+        "Creates a tone-only layer with a hidden mask, then selects the Brush. It evens the skin colour without smoothing texture.";
+    pub const HINT_SKIN_SMOOTH_RADIUS: &str = "How wide the smoothing reaches, in pixels. Larger values soften bigger areas.";
+    pub const HINT_SKIN_SMOOTH_SOFTNESS: &str = "Edge softness of the brush that reveals the effect; 100% is the softest tip.";
     pub const HINT_MATTIFIER: &str = "Reduces oily shine and blown highlights on the skin.";
     pub const HINT_SKIN_MASK: &str = "Creates a copy of the layer with a skin mask; the pixels are unchanged.";
     pub const HINT_PORTRAIT_VOLUMES: &str = "Adds depth and volume to the subject.";
@@ -150,8 +158,15 @@ mod text {
         RUN_SELECTED,
         SKIN_SMOOTH_BRUSH,
         SKIN_SMOOTH_READY,
+        EVEN_TONE_BRUSH,
+        EVEN_TONE_READY,
         SKIN_SMOOTH_STRENGTH,
+        SKIN_SMOOTH_RADIUS,
+        SKIN_SMOOTH_SOFTNESS,
         SKIN_SMOOTH_EVEN,
+        HINT_EVEN_TONE,
+        HINT_SKIN_SMOOTH_RADIUS,
+        HINT_SKIN_SMOOTH_SOFTNESS,
         SELECTION_ONLY,
         SELECTION_ONLY_HINT,
         PRESET,
@@ -432,6 +447,10 @@ pub struct RetouchAiState {
     pub selection_only: bool,
     /// Skin Smooth Brush strength, 5..100 (clamped by `ensure_tools`).
     pub skin_smooth_amount: f32,
+    /// Skin Smooth Brush effect radius in pixels, 2..20 (clamped by `ensure_tools`).
+    pub skin_smooth_radius: f32,
+    /// Edge softness of both skin brushes, 0..100% (clamped by `ensure_tools`).
+    pub skin_smooth_softness: f32,
     /// Skin Smooth Brush also evens the skin colour inside the same layer.
     pub skin_smooth_even: bool,
     /// The Save field's text.
@@ -466,6 +485,8 @@ impl Default for RetouchAiState {
             last_preset: CUSTOM.into(),
             selection_only: false,
             skin_smooth_amount: 65.0,
+            skin_smooth_radius: 6.0,
+            skin_smooth_softness: 50.0,
             skin_smooth_even: true,
             preset_name: String::new(),
             batch_input: String::new(),
@@ -534,6 +555,8 @@ impl RetouchAiState {
         }
         self.tools = tools;
         self.skin_smooth_amount = if self.skin_smooth_amount.is_finite() { self.skin_smooth_amount.clamp(5.0, 100.0) } else { 65.0 };
+        self.skin_smooth_radius = if self.skin_smooth_radius.is_finite() { self.skin_smooth_radius.clamp(2.0, 20.0) } else { 6.0 };
+        self.skin_smooth_softness = if self.skin_smooth_softness.is_finite() { self.skin_smooth_softness.clamp(0.0, 100.0) } else { 50.0 };
         self.batch_format = match self.batch_format.as_str() {
             "jpg" | "png" | "tiff" => self.batch_format.clone(),
             _ => "same".into(),
@@ -640,6 +663,7 @@ enum Action {
     Analyze,
     Run,
     SkinSmoothBrush,
+    EvenToneBrush,
     SetOpacity { layer: u64, opacity: f32, gesture: u64 },
     SetVisible { layer: u64, visible: bool },
     PickReference,
@@ -759,37 +783,79 @@ fn analyze(app: &mut PhotocraftApp) {
     }
 }
 
-fn skin_smooth_brush_setup(app: &mut PhotocraftApp) {
+/// The Brush hardness for a 0..100 softness: 0% is a hard edge (hardness 1) and 100% is the
+/// softest tip (hardness 0).
+fn brush_hardness(softness: f32) -> f32 {
+    let softness = if softness.is_finite() { softness.clamp(0.0, 100.0) } else { 50.0 };
+    1.0 - softness / 100.0
+}
+
+/// Payload for the Skin Smooth Brush: the slider strength, the effect radius (whole pixels) and
+/// the optional tone pass.
+fn smooth_brush_params(amount: f32, radius: f32, even_tone: bool) -> Value {
+    let radius = if radius.is_finite() { radius.round().clamp(2.0, 20.0) as u32 } else { 6 };
+    json!({"amount": amount, "radius": radius, "evenTone": even_tone, "smooth": true})
+}
+
+/// Payload for the Even Tone Brush: tone only, no smoothing.
+fn even_tone_brush_params(amount: f32) -> Value {
+    json!({"amount": amount, "smooth": false, "evenTone": true})
+}
+
+fn skin_smooth_brush_setup(app: &mut PhotocraftApp) -> bool {
     crate::tool_memory::select(app, crate::state::Tool::Brush);
     app.ui.mask_target = true;
     app.ui.vector_mask_target = false;
     app.sync_mask_targets();
+    let hardness = brush_hardness(app.ui.retouch_ai.skin_smooth_softness);
+    let mut ok = true;
+    if let Err(error) = app.run("tools.setBrush", json!({"hardness": hardness})) {
+        set_status(&mut app.ui.retouch_ai, crate::i18n::fmt(tl!(text::LAYER_UPDATE_FAILED), &[("error", &error)]), true);
+        ok = false;
+    }
     if let Err(error) = app.run("tools.setColors", json!({"foreground": "#ffffff", "background": "#000000"})) {
         set_status(&mut app.ui.retouch_ai, crate::i18n::fmt(tl!(text::LAYER_UPDATE_FAILED), &[("error", &error)]), true);
+        ok = false;
     }
+    ok
 }
 
-fn run_skin_smooth_brush(app: &mut PhotocraftApp) {
+/// Run one of the two skin brushes, store its result layer and hand the Brush to the user with
+/// the layer's mask targeted.
+fn run_skin_brush(app: &mut PhotocraftApp, params: Value, fallback_name: &str, ready: &str) {
     let Some(document) = app.session.active_index() else {
         set_status(&mut app.ui.retouch_ai, tl!(text::OPEN_IMAGE_TO_START).into(), true);
         return;
     };
-    let (amount, even_tone) = {
-        let state = &app.ui.retouch_ai;
-        let amount = if state.skin_smooth_amount.is_finite() { state.skin_smooth_amount.clamp(5.0, 100.0) } else { 65.0 };
-        (amount, state.skin_smooth_even)
-    };
-    match app.run("retouchAI.skinSmooth", json!({"amount": amount, "evenTone": even_tone})) {
+    match app.run("retouchAI.skinSmooth", params) {
         Ok(value) => {
             let layer = value.get("layer").and_then(Value::as_u64).unwrap_or(0);
-            let name = value.get("name").and_then(Value::as_str).unwrap_or("Retouch • Skin Smooth").to_string();
+            let name = value.get("name").and_then(Value::as_str).unwrap_or(fallback_name).to_string();
             let result = json!({"layers": [{"tool": "skinSmooth", "name": name, "layer": layer, "blend": "normal", "opacity": 1.0}]});
             store_results(&mut app.ui.retouch_ai, &result, Some(document));
-            skin_smooth_brush_setup(app);
-            set_status(&mut app.ui.retouch_ai, tl!(text::SKIN_SMOOTH_READY).into(), false);
+            if skin_smooth_brush_setup(app) {
+                set_status(&mut app.ui.retouch_ai, ready.into(), false);
+            }
         }
         Err(error) => set_status(&mut app.ui.retouch_ai, crate::i18n::fmt(tl!(text::RETOUCH_FAILED), &[("error", &error)]), true),
     }
+}
+
+fn run_skin_smooth_brush(app: &mut PhotocraftApp) {
+    let (amount, radius, even_tone) = {
+        let state = &app.ui.retouch_ai;
+        let amount = if state.skin_smooth_amount.is_finite() { state.skin_smooth_amount.clamp(5.0, 100.0) } else { 65.0 };
+        (amount, state.skin_smooth_radius, state.skin_smooth_even)
+    };
+    run_skin_brush(app, smooth_brush_params(amount, radius, even_tone), "Retouch • Skin Smooth", tl!(text::SKIN_SMOOTH_READY));
+}
+
+fn run_even_tone_brush(app: &mut PhotocraftApp) {
+    let amount = {
+        let state = &app.ui.retouch_ai;
+        if state.skin_smooth_amount.is_finite() { state.skin_smooth_amount.clamp(5.0, 100.0) } else { 65.0 }
+    };
+    run_skin_brush(app, even_tone_brush_params(amount), "Retouch • Even Skin Tone", tl!(text::EVEN_TONE_READY));
 }
 
 fn run_combo(app: &mut PhotocraftApp) {
@@ -870,6 +936,7 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
         Action::Analyze => analyze(app),
         Action::Run => run_combo(app),
         Action::SkinSmoothBrush => run_skin_smooth_brush(app),
+        Action::EvenToneBrush => run_even_tone_brush(app),
         Action::SetOpacity { layer, opacity, gesture } => {
             let params = json!({
                 "layer": layer,
@@ -1229,12 +1296,32 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                                 actions.push(Action::SkinSmoothBrush);
                             }
                             brush.on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
+                            let even =
+                                ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::EVEN_TONE_BRUSH), ui.available_width())).inner;
+                            if even.clicked() {
+                                actions.push(Action::EvenToneBrush);
+                            }
+                            even.on_hover_text(tl!(text::HINT_EVEN_TONE));
                             ui.horizontal(|ui| {
                                 ui.add_space(20.0);
                                 ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_STRENGTH)).size(11.0).color(t.text_dim));
                                 ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
                                 ui.add(egui::Slider::new(&mut state.skin_smooth_amount, 5.0..=100.0).show_value(false).suffix("%"))
                                     .on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_RADIUS)).size(11.0).color(t.text_dim));
+                                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
+                                ui.add(egui::Slider::new(&mut state.skin_smooth_radius, 2.0..=20.0).show_value(false).suffix(" px"))
+                                    .on_hover_text(tl!(text::HINT_SKIN_SMOOTH_RADIUS));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_SOFTNESS)).size(11.0).color(t.text_dim));
+                                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
+                                ui.add(egui::Slider::new(&mut state.skin_smooth_softness, 0.0..=100.0).show_value(false).suffix("%"))
+                                    .on_hover_text(tl!(text::HINT_SKIN_SMOOTH_SOFTNESS));
                             });
                             ui.horizontal(|ui| {
                                 ui.add_space(20.0);
@@ -1296,6 +1383,8 @@ mod tests {
         let state = RetouchAiState::default();
         assert!(!state.selection_only, "selection-only starts off");
         assert_eq!(state.skin_smooth_amount, 65.0, "the skin smooth brush starts at 65");
+        assert_eq!(state.skin_smooth_radius, 6.0, "the effect radius starts at 6 px");
+        assert_eq!(state.skin_smooth_softness, 50.0, "the brush starts half soft");
         assert!(state.skin_smooth_even, "even skin tone starts on");
         assert_eq!(state.tools.len(), TOOLS.len());
         for id in ["heal", "dodgeBurn", "skinTone", "eyeBrilliance", "teeth"] {
@@ -1309,8 +1398,9 @@ mod tests {
         let json = serde_json::to_string(&state).expect("serialize");
         let back: RetouchAiState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
-        // A custom brush strength and even-tone choice survive a relaunch.
-        let custom = RetouchAiState { skin_smooth_amount: 42.0, skin_smooth_even: false, ..Default::default() };
+        // A custom brush strength, radius, softness and even-tone choice survive a relaunch.
+        let custom =
+            RetouchAiState { skin_smooth_amount: 42.0, skin_smooth_radius: 14.0, skin_smooth_softness: 25.0, skin_smooth_even: false, ..Default::default() };
         let back: RetouchAiState = serde_json::from_str(&serde_json::to_string(&custom).expect("serialize")).expect("deserialize");
         assert_eq!(custom, back);
         // An older layout without the field gets the whole default state.
@@ -1320,17 +1410,29 @@ mod tests {
         let older: RetouchAiState = serde_json::from_str(r#"{"selectionOnly":true}"#).expect("older layout");
         assert!(older.selection_only);
         assert_eq!(older.skin_smooth_amount, 65.0);
+        assert_eq!(older.skin_smooth_radius, 6.0);
+        assert_eq!(older.skin_smooth_softness, 50.0);
         assert!(older.skin_smooth_even);
         // Hand-edited layouts are clamped into the slider's range.
-        let mut clamped = RetouchAiState { skin_smooth_amount: 500.0, ..Default::default() };
+        let mut clamped = RetouchAiState { skin_smooth_amount: 500.0, skin_smooth_radius: 500.0, skin_smooth_softness: 500.0, ..Default::default() };
         clamped.ensure_tools();
         assert_eq!(clamped.skin_smooth_amount, 100.0);
+        assert_eq!(clamped.skin_smooth_radius, 20.0);
+        assert_eq!(clamped.skin_smooth_softness, 100.0);
         clamped.skin_smooth_amount = 1.0;
+        clamped.skin_smooth_radius = 1.0;
+        clamped.skin_smooth_softness = -1.0;
         clamped.ensure_tools();
         assert_eq!(clamped.skin_smooth_amount, 5.0);
+        assert_eq!(clamped.skin_smooth_radius, 2.0);
+        assert_eq!(clamped.skin_smooth_softness, 0.0);
         clamped.skin_smooth_amount = f32::NAN;
+        clamped.skin_smooth_radius = f32::NAN;
+        clamped.skin_smooth_softness = f32::NAN;
         clamped.ensure_tools();
         assert_eq!(clamped.skin_smooth_amount, 65.0);
+        assert_eq!(clamped.skin_smooth_radius, 6.0);
+        assert_eq!(clamped.skin_smooth_softness, 50.0);
     }
 
     #[test]
@@ -1439,8 +1541,29 @@ mod tests {
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
         h.run_steps(4);
         assert!(h.query_all_by_label("Skin Smooth Brush").next().is_some(), "the brush action is offered in Skin & Face");
+        assert!(h.query_all_by_label("Even Tone Brush").next().is_some(), "the tone-only brush sits under the smoothing brush");
         assert!(h.query_all_by_label("Strength").next().is_some(), "the brush strength slider is under the button");
+        assert!(h.query_all_by_label("Effect radius").next().is_some(), "the effect radius slider is under the strength");
+        assert!(h.query_all_by_label("Brush softness").next().is_some(), "the brush softness slider is under the radius");
         assert!(h.query_all_by_label("Even skin tone").next().is_some(), "the even-tone checkbox is under the button");
+    }
+
+    #[test]
+    fn skin_brush_payloads_carry_radius_and_tone_only_flags() {
+        let smooth = smooth_brush_params(72.0, 12.6, true);
+        assert_eq!(smooth["amount"], 72.0);
+        assert_eq!(smooth["radius"], 13, "the radius reaches the engine in whole pixels");
+        assert_eq!(smooth["evenTone"], true);
+        assert_eq!(smooth["smooth"], true);
+        assert_eq!(smooth_brush_params(72.0, 99.0, false)["radius"], 20);
+        assert_eq!(smooth_brush_params(72.0, 0.0, false)["radius"], 2);
+
+        let tone = even_tone_brush_params(80.0);
+        assert_eq!(tone, json!({"amount": 80.0, "smooth": false, "evenTone": true}), "the tone brush never smooths");
+
+        assert_eq!(brush_hardness(0.0), 1.0, "0% softness is a hard tip");
+        assert_eq!(brush_hardness(50.0), 0.5);
+        assert_eq!(brush_hardness(100.0), 0.0, "100% softness is the softest tip");
     }
 
     /// The panel's data keys skip the literal scanner (the other complete catalogs fall back to
