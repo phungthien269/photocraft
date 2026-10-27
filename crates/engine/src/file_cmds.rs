@@ -101,6 +101,27 @@ pub(crate) fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
     Err(EngineError::Other(format!("cannot write {path}: no file system on the web")))
 }
 
+/// Whether `path` names a file that already exists (never on the web, which cannot write).
+#[cfg(not(target_arch = "wasm32"))]
+fn output_exists(path: &str) -> bool {
+    std::path::Path::new(path).is_file()
+}
+#[cfg(target_arch = "wasm32")]
+fn output_exists(_path: &str) -> bool {
+    false
+}
+
+/// Delete one output file a cancelled batch created. False when it could not be removed (the
+/// result then doesn't claim it).
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_output(path: &str) -> bool {
+    std::fs::remove_file(path).is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+fn remove_output(_path: &str) -> bool {
+    false
+}
+
 /// Files of a folder that look like images we can open, sorted by name.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_images(dir: &str) -> Result<Vec<String>> {
@@ -1111,32 +1132,67 @@ pub(crate) fn process_tree(
     f: &dyn Fn(&mut Session) -> Result<()>,
     ctl: Option<&JobCtx>,
 ) -> Value {
+    process_tree_with(inputs, output, format, save, suffix, f, ctl, BatchRunOpts::default())
+}
+
+/// What a batch run does beyond writing its outputs.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BatchRunOpts {
+    /// On cancel, delete the output files this run created. A file that already existed before
+    /// the run is kept (it may have been overwritten, but it was not ours to remove).
+    pub cleanup_on_cancel: bool,
+}
+
+/// [`process_tree`] with [`BatchRunOpts`] (the Batch command's `cleanupOnCancel`).
+// The arguments mirror `process_tree`, plus the run options; grouping them would only move the
+// list into a struct with no other user.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_tree_with(
+    inputs: &[BatchInput],
+    output: &str,
+    format: &str,
+    save: SaveOpts,
+    suffix: &str,
+    f: &dyn Fn(&mut Session) -> Result<()>,
+    ctl: Option<&JobCtx>,
+    opts: BatchRunOpts,
+) -> Value {
     let outputs = inputs.iter().map(|BatchInput { path, rel_dir }| {
         let ext =
             if format == "same" { path.rsplit('.').next().unwrap_or("png").to_ascii_lowercase() } else { format.trim_start_matches('.').to_ascii_lowercase() };
         (path.as_str(), join(&join(output, rel_dir), &format!("{}{suffix}.{ext}", stem(path))))
     });
-    process_outputs(outputs, save, f, ctl)
+    process_outputs_with(outputs, save, f, ctl, opts)
 }
 
-fn process_outputs<'a>(
+fn process_outputs_with<'a>(
     outputs: impl IntoIterator<Item = (&'a str, String)>,
     save: SaveOpts,
     f: &dyn Fn(&mut Session) -> Result<()>,
     ctl: Option<&JobCtx>,
+    opts: BatchRunOpts,
 ) -> Value {
     let outputs: Vec<(&str, String)> = outputs.into_iter().collect();
     let total = outputs.len().max(1);
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
+    // Outputs this run created (not overwritten), so a cancelled run can take back only those.
+    let mut created: Vec<String> = Vec::new();
+    let mut cancelled = false;
     for (i, (path, out)) in outputs.into_iter().enumerate() {
-        if ctl.is_some_and(|c| c.cancelled()) {
+        // Pausing and cancellation are checked between files: a render already started finishes,
+        // so a pause takes effect after the current file, never mid-render.
+        if let Some(c) = ctl
+            && c.wait_if_paused().is_err()
+        {
+            cancelled = true;
             break;
         }
         if let Some(c) = ctl {
             c.progress(i as f32 / total as f32, &format!("Processing {}", file_name(path)));
         }
+        let existed = output_exists(&out);
         let r = (|| -> Result<()> {
             written.check(&out).map_err(EngineError::Other)?;
             let bytes = read_file(path)?;
@@ -1151,15 +1207,26 @@ fn process_outputs<'a>(
         match r {
             Ok(()) => {
                 written.record(&out, path);
+                if !existed {
+                    created.push(out.clone());
+                }
                 files.push(out);
             }
             Err(e) => errors.push(json!({"file": path, "error": e.to_string()})),
         }
     }
-    if let Some(c) = ctl {
+    // A cancel that lands just as the last file ends still counts: the run was cancelled.
+    cancelled |= ctl.is_some_and(JobCtx::cancelled);
+    let mut result = json!({"files": files, "errors": errors});
+    if cancelled {
+        if opts.cleanup_on_cancel {
+            let removed: Vec<String> = created.into_iter().filter(|path| remove_output(path)).collect();
+            result["removed"] = json!(removed);
+        }
+    } else if let Some(c) = ctl {
         c.progress(1.0, "Done");
     }
-    json!({"files": files, "errors": errors})
+    result
 }
 
 /// The output paths a batch run has written, so a later input whose output name matches an
@@ -1194,6 +1261,8 @@ struct BatchPlan {
     save: SaveOpts,
     actions: crate::actions_cmds::ActionState,
     color_presets: Vec<Group<ColorPreset>>,
+    /// Delete the outputs this run created if the job is cancelled.
+    cleanup_on_cancel: bool,
 }
 
 fn batch_apply(plan: &BatchPlan, ctl: Option<&JobCtx>) -> Result<Value> {
@@ -1209,9 +1278,10 @@ fn batch_apply(plan: &BatchPlan, ctl: Option<&JobCtx>) -> Result<Value> {
         }
         Ok(())
     };
+    let opts = BatchRunOpts { cleanup_on_cancel: plan.cleanup_on_cancel };
     let r = match &plan.names {
-        Some(names) => process_outputs(plan.inputs.iter().map(|i| i.path.as_str()).zip(names.iter().cloned()), plan.save, &run, ctl),
-        None => process_tree(&plan.inputs, &plan.output, &plan.format, plan.save, "", &run, ctl),
+        Some(names) => process_outputs_with(plan.inputs.iter().map(|i| i.path.as_str()).zip(names.iter().cloned()), plan.save, &run, ctl, opts),
+        None => process_tree_with(&plan.inputs, &plan.output, &plan.format, plan.save, "", &run, ctl, opts),
     };
     Ok(r)
 }
@@ -1251,7 +1321,8 @@ fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // caller's colour library so an apply step picks the preset a click would, including edits to
     // the built-ins (Color Presets batch uses `color.presets.apply` by name).
     let color_presets = s.presets.color_presets.clone();
-    let plan = BatchPlan { steps, output, inputs, format, names, save, actions, color_presets };
+    let cleanup_on_cancel = p.get("cleanupOnCancel").and_then(Value::as_bool).unwrap_or(false);
+    let plan = BatchPlan { steps, output, inputs, format, names, save, actions, color_presets, cleanup_on_cancel };
     // `jobs::run` spawns when the command was started with `Session::start`, and runs inline for
     // scripts/tests. Batch has no active document to lock; each file gets a scratch session.
     crate::jobs::run(s, "Batch", false, move |ctx| batch_apply(&plan, Some(ctx)), |_s, r| Ok(r))
@@ -1774,7 +1845,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Batch…",
             &["File", "Automate"],
             None,
-            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's)} → {files, errors} (an input whose output name was already written in the run goes to errors)"##,
+            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action),"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"same|png|jpg|psd|tiff|…"="same","quality":0..12?,"naming":string? (blank keeps source names; {name}, {serial} padded to 3 digits, {date} as YYYY-MM-DD UTC; extension added automatically),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"calledActions":[{"name","steps"}…]? (the actions Play Action steps call; default: the session's),"cleanupOnCancel":bool=false (a cancelled run deletes the output files it created; a file that already existed is kept)} → {files, errors} (an input whose output name was already written in the run goes to errors; a cancelled run with cleanupOnCancel also reports "removed")"##,
             native,
             batch
         ),

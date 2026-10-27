@@ -3872,10 +3872,14 @@ curves	Smooth	Làm mượt
 	Include subfolders	Gồm thư mục con
 	Run	Chạy
 	Running…	Đang chạy…
+	Resume	Tiếp tục
+	Paused after the current file.	Tạm dừng sau khi xử lý xong tệp hiện tại.
+	Resuming…	Đang tiếp tục…
+	Pause takes effect after the current file finishes.	Tạm dừng có hiệu lực sau khi tệp hiện tại xử lý xong.
 	Select a preset first.	Hãy chọn một preset trước.
 	Choose a different output folder.	Hãy chọn thư mục đích khác thư mục nguồn.
 	Batch failed: every file reported an error.	Hàng loạt thất bại: mọi tệp đều báo lỗi.
-	Batch cancelled. Files already written were kept.	Đã hủy batch. Các tệp đã ghi vẫn được giữ.
+	Batch cancelled. Files written by this run were removed.	Đã hủy batch. Các tệp do lần chạy này ghi đã được xóa.
 	{n} layers	{n} lớp
 	1 layer	1 lớp
 	Presets…	Preset…

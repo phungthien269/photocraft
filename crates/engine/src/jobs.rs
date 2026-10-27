@@ -14,6 +14,9 @@
 //!   On wasm `start` runs inline (same API, written once).
 //! - [`Session::cancel_job`] sets the flag; the algorithms check it per tile, row band or
 //!   iteration, and the result is discarded. The document is never touched by a worker.
+//! - [`Session::pause_job`] pauses a job between work units (the Batch command waits between
+//!   files, so the file being rendered finishes); [`Session::resume_job`] continues it, and a
+//!   cancel while paused wakes the worker with `Err(Cancelled)`.
 //! - A panic in the worker becomes an error; the document is unchanged.
 //! - While a job runs on a document, commands that would edit that document are disabled with a
 //!   message naming the job (queries and document-independent commands still run).
@@ -80,6 +83,13 @@ pub struct JobCtx {
 #[derive(Default)]
 struct Shared {
     cancel: AtomicBool,
+    /// The job is asked to pause between work units (see [`JobCtx::wait_if_paused`]).
+    pause: AtomicBool,
+    /// Guards pause transitions and wakes a worker blocked in [`JobCtx::wait_if_paused`]. A
+    /// resume takes it before clearing the flag, so a worker cannot miss the wake between its
+    /// check and its wait.
+    pause_gate: Mutex<()>,
+    wake: std::sync::Condvar,
     /// `f32` bits of the progress fraction. Non-negative floats order like their bits, so
     /// `fetch_max` keeps progress monotonic even with several reporting threads.
     progress: AtomicU32,
@@ -88,7 +98,7 @@ struct Shared {
 
 impl std::fmt::Debug for JobCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JobCtx").field("progress", &self.fraction()).field("cancelled", &self.cancelled()).finish()
+        f.debug_struct("JobCtx").field("progress", &self.fraction()).field("cancelled", &self.cancelled()).field("paused", &self.paused()).finish()
     }
 }
 
@@ -116,9 +126,49 @@ impl JobCtx {
         self.shared.cancel.load(Ordering::Relaxed)
     }
 
-    /// Ask the job to stop (idempotent).
+    /// Ask the job to stop (idempotent). A worker blocked in [`JobCtx::wait_if_paused`] wakes
+    /// and returns `Err(Cancelled)`.
     pub fn cancel(&self) {
         self.shared.cancel.store(true, Ordering::Relaxed);
+        // Wake a paused worker so it sees the cancellation.
+        let _gate = self.shared.pause_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        self.shared.wake.notify_all();
+    }
+
+    /// Is the job paused? Work already in progress runs on to its next
+    /// [`JobCtx::wait_if_paused`] (a batch file finishes rendering).
+    pub fn paused(&self) -> bool {
+        self.shared.pause.load(Ordering::Relaxed)
+    }
+
+    /// Ask the job to pause before its next work unit (idempotent).
+    pub fn pause(&self) {
+        let _gate = self.shared.pause_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        self.shared.pause.store(true, Ordering::Relaxed);
+    }
+
+    /// Continue a paused job (idempotent).
+    pub fn resume(&self) {
+        let _gate = self.shared.pause_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        self.shared.pause.store(false, Ordering::Relaxed);
+        self.shared.wake.notify_all();
+    }
+
+    /// Block while the job is paused, at a point where stopping is safe (between batch files).
+    /// `Err(Cancelled)` when it was cancelled while paused; otherwise `Ok(())` once running.
+    pub fn wait_if_paused(&self) -> Result<()> {
+        if !self.paused() {
+            return self.check();
+        }
+        let mut gate = self.shared.pause_gate.lock().unwrap_or_else(PoisonError::into_inner);
+        while self.shared.pause.load(Ordering::Relaxed) {
+            if self.cancelled() {
+                return Err(EngineError::Cancelled);
+            }
+            gate = self.shared.wake.wait(gate).unwrap_or_else(PoisonError::into_inner);
+        }
+        drop(gate);
+        self.check()
     }
 
     /// `Err(Cancelled)` once cancelled, for `?` between stages.
@@ -180,6 +230,8 @@ pub struct JobInfo {
     /// `running`, `done`, `failed` or `cancelled`.
     pub state: &'static str,
     pub progress: f32,
+    /// The job is paused between work units (a batch pauses after the current file).
+    pub paused: bool,
     pub message: String,
     pub elapsed_ms: f64,
     /// The command's result (done) or the error (failed).
@@ -258,6 +310,7 @@ impl Running {
             document: self.doc,
             state: "running",
             progress: self.ctx.fraction(),
+            paused: self.ctx.paused(),
             message: self.ctx.message(),
             elapsed_ms: now_ms() - self.started_ms,
             result: None,
@@ -648,6 +701,30 @@ impl Session {
         true
     }
 
+    /// Pause job `id` before its next work unit (a batch pauses after the current file). The job
+    /// keeps its place and its result; [`Session::resume_job`] continues it. False if no such job
+    /// is running.
+    pub fn pause_job(&mut self, id: JobId) -> bool {
+        match self.jobs.running.iter().find(|r| r.id == id) {
+            Some(job) => {
+                job.ctx.pause();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Continue a paused job (see [`Session::pause_job`]). False if no such job is running.
+    pub fn resume_job(&mut self, id: JobId) -> bool {
+        match self.jobs.running.iter().find(|r| r.id == id) {
+            Some(job) => {
+                job.ctx.resume();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Cancel every running job (e.g. before quitting).
     pub fn cancel_all_jobs(&mut self) {
         let ids: Vec<JobId> = self.jobs.running.iter().map(|r| r.id).collect();
@@ -943,6 +1020,7 @@ impl Session {
         };
         let mut info = job.info();
         info.state = state;
+        info.paused = false;
         info.result = result;
         info.error = error;
         if state == "done" {

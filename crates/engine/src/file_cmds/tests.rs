@@ -875,6 +875,86 @@ fn load_files_into_stack_and_image_processor_and_batch() {
 }
 
 #[test]
+fn batch_cleanup_on_cancel_removes_only_the_outputs_it_created() {
+    let dir = tmp("batch-cancel-cleanup");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    for name in ["a.png", "b.png", "c.png"] {
+        png(&input, name, 8, 8, "#ff0000");
+    }
+    let out = join(&dir, "out");
+    std::fs::create_dir_all(&out).unwrap();
+    // `a.png` already exists: this run overwrites it but must not delete it when cancelled.
+    let kept = join(&out, "a.png");
+    std::fs::write(&kept, b"pre-existing").unwrap();
+    let inputs: Vec<BatchInput> = ["a.png", "b.png", "c.png"].iter().map(|name| BatchInput { path: join(&input, name), rel_dir: String::new() }).collect();
+    let ctx = crate::jobs::JobCtx::new();
+    let runs = std::sync::atomic::AtomicUsize::new(0);
+    let run = |_: &mut Session| {
+        // Cancel while the second file runs: `a.png` is written, `b.png` finishes, `c.png` stops.
+        if runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+            ctx.cancel();
+        }
+        Ok(())
+    };
+    let opts = BatchRunOpts { cleanup_on_cancel: true };
+    let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), opts);
+    assert_eq!(r["files"].as_array().unwrap().len(), 2, "{r}");
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    let b_out = join(&out, "b.png");
+    let removed: Vec<&str> = r["removed"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(removed, [b_out.as_str()], "only the output this run created is removed: {r}");
+    assert!(std::path::Path::new(&kept).is_file(), "the pre-existing output is kept");
+    assert_ne!(std::fs::read(&kept).unwrap(), b"pre-existing", "it was overwritten, not deleted");
+    assert!(!std::path::Path::new(&b_out).exists(), "the new output is gone");
+    assert!(!std::path::Path::new(&join(&out, "c.png")).exists(), "the cancelled file was never written");
+}
+
+#[test]
+fn batch_cancel_without_cleanup_keeps_written_files() {
+    let dir = tmp("batch-cancel-keep");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    for name in ["a.png", "b.png", "c.png"] {
+        png(&input, name, 8, 8, "#0000ff");
+    }
+    let out = join(&dir, "out");
+    let inputs: Vec<BatchInput> = ["a.png", "b.png", "c.png"].iter().map(|name| BatchInput { path: join(&input, name), rel_dir: String::new() }).collect();
+    let ctx = crate::jobs::JobCtx::new();
+    let runs = std::sync::atomic::AtomicUsize::new(0);
+    let run = |_: &mut Session| {
+        if runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+            ctx.cancel();
+        }
+        Ok(())
+    };
+    let r = process_tree_with(&inputs, &out, "png", SaveOpts::default(), "", &run, Some(&ctx), BatchRunOpts::default());
+    assert_eq!(r["files"].as_array().unwrap().len(), 2, "{r}");
+    assert!(r.get("removed").is_none(), "the default result shape is unchanged: {r}");
+    assert!(std::path::Path::new(&join(&out, "a.png")).is_file(), "a written file is kept");
+    assert!(std::path::Path::new(&join(&out, "b.png")).is_file(), "a written file is kept");
+    assert!(!std::path::Path::new(&join(&out, "c.png")).exists(), "the cancelled file was never written");
+}
+
+#[test]
+fn batch_cleanup_on_cancel_is_opt_in_and_stops_before_the_next_file() {
+    let dir = tmp("batch-cancel-optin");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    png(&input, "a.png", 8, 8, "#00ff00");
+    let out = join(&dir, "out");
+    let mut s = Session::new();
+    let ctx = crate::jobs::JobCtx::new();
+    ctx.cancel();
+    s.set_inline_job_ctx(Some(ctx));
+    let r = s.execute("file.automate.batch", json!({"steps": [], "input": input, "output": out, "format": "png", "cleanupOnCancel": true})).unwrap();
+    assert!(r["files"].as_array().unwrap().is_empty(), "{r}");
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(r["removed"], json!([]), "{r}");
+    assert!(!std::path::Path::new(&join(&out, "a.png")).exists(), "nothing was written");
+}
+
+#[test]
 fn color_lookup_table_bakes_the_adjustment_stack() {
     let mut s = session(8, 8, 8);
     assert!(!s.is_enabled("file.export.colorLookupTables"));

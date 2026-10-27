@@ -191,6 +191,59 @@ fn progress_is_monotonic_and_reaches_one() {
 }
 
 #[test]
+fn pause_resume_and_wait_if_paused() {
+    let ctx = JobCtx::new();
+    assert!(!ctx.paused());
+    // Not paused: the wait is a cancellation check and returns at once.
+    ctx.wait_if_paused().unwrap();
+    ctx.pause();
+    assert!(ctx.paused());
+    ctx.resume();
+    assert!(!ctx.paused());
+
+    // Paused: a worker blocks in the wait until it is resumed.
+    ctx.pause();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let waiter = ctx.clone();
+    let t = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let _ = done_tx.send(waiter.wait_if_paused());
+    });
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err(), "a paused job waits");
+    ctx.resume();
+    assert!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap().is_ok(), "resume continues the job");
+    t.join().unwrap();
+
+    // Cancelled while paused: the wait wakes with the stop signal.
+    ctx.pause();
+    ctx.cancel();
+    assert!(matches!(ctx.wait_if_paused(), Err(EngineError::Cancelled)));
+}
+
+#[test]
+fn pause_job_and_resume_job_report_the_paused_state() {
+    let mut s = session(64, 64);
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let id = gated_job(&mut s, &gate);
+    let info = s.job(id).expect("running");
+    assert!(!info.paused);
+    assert!(s.pause_job(id));
+    let info = s.job(id).expect("running");
+    assert!(info.paused, "the job table reports the pause");
+    assert_eq!(serde_json::to_value(&info).unwrap()["paused"], json!(true), "jobs.list serializes it");
+    assert!(s.resume_job(id));
+    assert!(!s.job(id).expect("running").paused);
+    assert!(!s.pause_job(JobId(9999)), "no such job");
+    assert!(!s.resume_job(JobId(9999)), "no such job");
+    gate.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Done(_)));
+    let info = s.jobs_with_recent().into_iter().find(|j| j.id == id).expect("recent");
+    assert!(!info.paused, "an ended job is not paused");
+}
+
+#[test]
 fn a_preset_filter_job_is_named_after_the_preset() {
     // #528: the job (progress UI) and its history step say "Blur More", not "Gaussian Blur".
     let mut s = session(300, 200);

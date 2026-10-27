@@ -86,13 +86,18 @@ pub(crate) mod text {
     pub const INCLUDE_SUBFOLDERS: &str = "Include subfolders";
     pub const RUN: &str = "Run";
     pub const RUNNING: &str = "Running…";
+    pub const PAUSE: &str = "Pause";
+    pub const RESUME: &str = "Resume";
+    pub const PAUSED: &str = "Paused after the current file.";
+    pub const RESUMING: &str = "Resuming…";
+    pub const PAUSE_HINT: &str = "Pause takes effect after the current file finishes.";
     pub const SELECT_PRESET: &str = "Select a preset first.";
     pub const CHOOSE_FOLDERS: &str = "Choose both an input and an output folder.";
     pub const CHOOSE_DIFFERENT: &str = "Choose a different output folder.";
     pub const BATCH_FINISHED: &str = "Batch finished: {files} files, {errors} errors";
     pub const BATCH_FAILED: &str = "Batch failed: {error}";
     pub const BATCH_ALL_FAILED: &str = "Batch failed: every file reported an error.";
-    pub const BATCH_CANCELLED: &str = "Batch cancelled. Files already written were kept.";
+    pub const BATCH_CANCELLED: &str = "Batch cancelled. Files written by this run were removed.";
 
     pub const LAYERS: &str = "{n} layers";
     pub const ONE_LAYER: &str = "1 layer";
@@ -128,6 +133,11 @@ pub(crate) mod text {
         INCLUDE_SUBFOLDERS,
         RUN,
         RUNNING,
+        PAUSE,
+        RESUME,
+        PAUSED,
+        RESUMING,
+        PAUSE_HINT,
         SELECT_PRESET,
         CHOOSE_FOLDERS,
         CHOOSE_DIFFERENT,
@@ -174,6 +184,9 @@ pub struct ColorPresetsState {
     pub batch_progress: f32,
     #[serde(skip)]
     pub batch_message: String,
+    /// The running batch is paused (it stops after the current file). Session-only.
+    #[serde(skip)]
+    pub batch_paused: bool,
 }
 
 impl Default for ColorPresetsState {
@@ -194,6 +207,7 @@ impl Default for ColorPresetsState {
             batch_job: None,
             batch_progress: 0.0,
             batch_message: String::new(),
+            batch_paused: false,
         }
     }
 }
@@ -582,6 +596,8 @@ fn queue_batch(app: &mut PhotocraftApp) {
         "output": output,
         "format": format,
         "includeSubfolders": include_subfolders,
+        // A cancelled run takes back the files it wrote (Color Presets owns its batch output).
+        "cleanupOnCancel": true,
     }));
 }
 
@@ -590,6 +606,7 @@ fn clear_batch_job(app: &mut PhotocraftApp) {
     app.ui.color_presets.batch_running = false;
     app.ui.color_presets.batch_progress = 0.0;
     app.ui.color_presets.batch_message.clear();
+    app.ui.color_presets.batch_paused = false;
 }
 
 fn finish_batch_value(app: &mut PhotocraftApp, value: &Value) {
@@ -612,6 +629,7 @@ fn execute_batch(app: &mut PhotocraftApp, params: Value) {
             app.ui.color_presets.batch_job = Some(id);
             app.ui.color_presets.batch_running = true;
             app.ui.color_presets.batch_progress = 0.0;
+            app.ui.color_presets.batch_paused = false;
             app.ui.color_presets.batch_message = tl!(text::RUNNING).to_string();
         }
         Ok(Started::Done(value)) => finish_batch_value(app, &value),
@@ -629,7 +647,14 @@ fn poll_batch_job(app: &mut PhotocraftApp) {
     match info.state {
         "running" => {
             app.ui.color_presets.batch_progress = info.progress;
-            app.ui.color_presets.batch_message = if info.message.is_empty() { tl!(text::RUNNING).to_string() } else { info.message.clone() };
+            app.ui.color_presets.batch_paused = info.paused;
+            app.ui.color_presets.batch_message = if info.paused {
+                tl!(text::PAUSED).to_string()
+            } else if info.message.is_empty() {
+                tl!(text::RUNNING).to_string()
+            } else {
+                info.message.clone()
+            };
         }
         "done" => {
             if let Some(result) = info.result {
@@ -759,6 +784,8 @@ enum Action {
     PickInput,
     PickOutput,
     RunBatch,
+    PauseBatch,
+    ResumeBatch,
     CancelBatch,
 }
 
@@ -778,6 +805,24 @@ fn apply_action(app: &mut PhotocraftApp, action: Action) {
             });
         }
         Action::RunBatch => queue_batch(app),
+        Action::PauseBatch => {
+            if let Some(id) = app.ui.color_presets.batch_job
+                && app.session.pause_job(id)
+            {
+                app.ui.color_presets.batch_paused = true;
+                app.ui.color_presets.batch_message = tl!(text::PAUSED).to_string();
+                set_batch_status(app, tl!(text::PAUSED).to_string(), false);
+            }
+        }
+        Action::ResumeBatch => {
+            if let Some(id) = app.ui.color_presets.batch_job
+                && app.session.resume_job(id)
+            {
+                app.ui.color_presets.batch_paused = false;
+                app.ui.color_presets.batch_message = tl!(text::RESUMING).to_string();
+                set_batch_status(app, tl!(text::RESUMING).to_string(), false);
+            }
+        }
         Action::CancelBatch => {
             if let Some(id) = app.ui.color_presets.batch_job {
                 app.session.cancel_job(id);
@@ -934,11 +979,17 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
     }
     if state.batch_running {
         ui.horizontal(|ui| {
-            ui.add(egui::ProgressBar::new(state.batch_progress).desired_width(170.0).show_percentage());
+            ui.add(egui::ProgressBar::new(state.batch_progress).desired_width(140.0).show_percentage());
+            let pause_label = if state.batch_paused { tl!(text::RESUME) } else { tl!(text::PAUSE) };
+            let pause = widgets::secondary_button(ui, pause_label, 0.0);
+            if pause.on_hover_text(tl!(text::PAUSE_HINT)).clicked() {
+                actions.push(if state.batch_paused { Action::ResumeBatch } else { Action::PauseBatch });
+            }
             if widgets::secondary_button(ui, tl!("Cancel"), 0.0).clicked() {
                 actions.push(Action::CancelBatch);
             }
         });
+        ui.add(egui::Label::new(egui::RichText::new(tl!(text::PAUSE_HINT)).size(10.5).color(t.text_faint)).wrap());
         if !state.batch_message.is_empty() {
             ui.add(egui::Label::new(egui::RichText::new(&state.batch_message).size(11.0).color(t.text_dim)).wrap());
         }
@@ -1357,6 +1408,7 @@ mod tests {
         assert_ne!(app.perf.last_command, "file.automate.batch", "validation only; the run waits a frame");
         assert!(!app.ui.color_presets.batch_running);
         let params = app.ui.color_presets.batch_pending.clone().expect("the batch is queued");
+        assert_eq!(params["cleanupOnCancel"], json!(true), "a cancelled Color Presets run takes back its files");
         app.ui.color_presets.batch_pending = None;
         app.ui.color_presets.batch_running = true;
         execute_batch(&mut app, params);
@@ -1368,6 +1420,70 @@ mod tests {
         assert!(app.session.job(job).is_none(), "cancel removes the running job");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A background batch job that runs until it is cancelled, so pause/resume can be observed.
+    fn gated_batch_job(app: &mut PhotocraftApp) -> JobId {
+        let started = app
+            .session
+            .start_job(
+                "file.automate.batch",
+                json!({}),
+                "Batch",
+                false,
+                |ctx| {
+                    while !ctx.cancelled() {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    ctx.check()
+                },
+                |_s, ()| Ok(json!({"files": [], "errors": []})),
+            )
+            .expect("start the batch job");
+        match started {
+            Started::Job(id) => id,
+            Started::Done(_) => panic!("expected a background job"),
+        }
+    }
+
+    #[test]
+    fn pause_and_resume_actions_update_the_batch_state() {
+        let mut app = app_with_document();
+        let id = gated_batch_job(&mut app);
+        app.ui.color_presets.batch_job = Some(id);
+        app.ui.color_presets.batch_running = true;
+        app.ui.color_presets.batch_message = text::RUNNING.to_string();
+        apply_action(&mut app, Action::PauseBatch);
+        assert!(app.ui.color_presets.batch_paused);
+        assert!(app.session.job(id).expect("the job runs").paused);
+        assert_eq!(app.ui.color_presets.batch_status, text::PAUSED);
+        assert_eq!(app.ui.color_presets.batch_message, text::PAUSED);
+        poll_batch_job(&mut app);
+        assert!(app.ui.color_presets.batch_paused, "polling keeps the paused state");
+        assert_eq!(app.ui.color_presets.batch_message, text::PAUSED);
+        apply_action(&mut app, Action::ResumeBatch);
+        assert!(!app.ui.color_presets.batch_paused);
+        assert!(!app.session.job(id).expect("the job runs").paused);
+        assert_eq!(app.ui.color_presets.batch_status, text::RESUMING);
+        assert_eq!(app.ui.color_presets.batch_message, text::RESUMING);
+        app.session.cancel_job(id);
+        app.session.join_cancelled_jobs();
+    }
+
+    #[test]
+    fn cancelled_batch_status_says_the_run_removed_its_files() {
+        assert!(text::BATCH_CANCELLED.contains("removed"), "the status names the cleanup: {}", text::BATCH_CANCELLED);
+        let mut app = app_with_document();
+        let id = gated_batch_job(&mut app);
+        app.ui.color_presets.batch_job = Some(id);
+        app.ui.color_presets.batch_running = true;
+        app.ui.color_presets.batch_paused = true;
+        apply_action(&mut app, Action::CancelBatch);
+        assert_eq!(app.ui.color_presets.batch_status, text::BATCH_CANCELLED);
+        assert!(!app.ui.color_presets.batch_running);
+        assert!(!app.ui.color_presets.batch_paused, "cancel clears the pause");
+        assert!(app.ui.color_presets.batch_job.is_none());
+        app.session.join_cancelled_jobs();
     }
 
     #[test]
