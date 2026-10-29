@@ -217,7 +217,9 @@ pub enum Adjustment {
         gamma: f32,
     },
     /// Lightroom-style Basic controls: white balance, exposure, tone and presence on one layer.
-    /// Photoshop has no PSD block for it (it lives in native `.pcraft`).
+    /// Photoshop has no equivalent adjustment: a PSD save writes PhotoCraft's own `PcBC` block
+    /// (reopened here as Basic Color) beside a neutral Brightness/Contrast, so Photoshop opens a
+    /// no-op layer and editing it there drops these settings. Native `.pcraft` keeps them too.
     BasicColor {
         /// -100..=100: + warmer (red up, blue down), 0 neutral.
         temperature: f32,

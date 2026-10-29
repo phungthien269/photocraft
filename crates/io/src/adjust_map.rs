@@ -6,17 +6,42 @@
 //!
 //! Every [`Adjustment`] kind is written (`vibA`, `blnc`, `blwh`, `phfl` and `mixr` included);
 //! a Color Lookup without a table is written as an identity cube and a Gradient Map with fewer
-//! than two stops as the equivalent two-stop gradient, so nothing is dropped on save. Blocks
-//! that cannot be read (noise gradients, profile lookups, CMYK channel mixers, unknown versions)
-//! stay [`Adjustment::Unsupported`] and are written back verbatim.
+//! than two stops as the equivalent two-stop gradient, so nothing is dropped on save. Basic Color
+//! has no Photoshop adjustment: it is written as PhotoCraft's own `PcBC` JSON block (reopened as
+//! Basic Color here) beside a neutral Brightness/Contrast, so Photoshop opens a valid no-op
+//! adjustment layer. Blocks that cannot be read (noise gradients, profile lookups, CMYK channel
+//! mixers, unknown versions) stay [`Adjustment::Unsupported`] and are written back verbatim.
 
 use photocraft_doc::Adjustment;
 use photocraft_doc::adjust::{CURVE_MAP_LEN, CurvePoint, HueRange, LevelsChannel, ToneSpace, curve_map, curve_map_outputs};
 use photocraft_psd::descriptor::{Descriptor, Value, VersionedDescriptor};
 
-/// All PSD adjustment keys recognized as adjustment layers.
-pub const ADJUSTMENT_KEYS: [&[u8; 4]; 16] =
-    [b"levl", b"curv", b"hue2", b"brit", b"nvrt", b"thrs", b"post", b"expA", b"vibA", b"blnc", b"mixr", b"grdm", b"phfl", b"selc", b"blwh", b"clrL"];
+/// PhotoCraft's own adjustment block, a JSON [`Adjustment`] payload: the only way a Basic Color
+/// layer survives a PSD save. Photoshop ignores the key (it reads the neutral `brit`/`CgEd`
+/// blocks written beside it), so a round trip through Photoshop loses the Basic Color settings.
+const BASIC_COLOR_KEY: &[u8; 4] = b"PcBC";
+
+/// All PSD adjustment keys recognized as adjustment layers, in the importer's priority order.
+/// `PcBC` comes first so a Basic Color layer reopens as itself, not as the neutral fallback.
+pub const ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
+    BASIC_COLOR_KEY,
+    b"levl",
+    b"curv",
+    b"hue2",
+    b"brit",
+    b"nvrt",
+    b"thrs",
+    b"post",
+    b"expA",
+    b"vibA",
+    b"blnc",
+    b"mixr",
+    b"grdm",
+    b"phfl",
+    b"selc",
+    b"blwh",
+    b"clrL",
+];
 
 fn be16(d: &[u8], at: usize) -> Option<u16> {
     d.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
@@ -119,6 +144,7 @@ pub enum Channels {
 /// The menu name of the adjustment a PSD key holds (for messages).
 pub fn label(key: &[u8; 4]) -> &'static str {
     match key {
+        BASIC_COLOR_KEY => "Basic Color",
         b"levl" => "Levels",
         b"curv" => "Curves",
         b"hue2" => "Hue/Saturation",
@@ -140,9 +166,10 @@ pub fn label(key: &[u8; 4]) -> &'static str {
 }
 
 /// Why [`parse`] keeps a block as [`Adjustment::Unsupported`], when there is more to say than
-/// "it could not be read" (so far: Color Lookup).
+/// "it could not be read" (Basic Color and Color Lookup).
 pub fn unreadable_reason(key: &[u8; 4], data: &[u8]) -> Option<String> {
     match key {
+        BASIC_COLOR_KEY => read_basic_color(data).err(),
         b"clrL" => read_lookup(data).err(),
         _ => None,
     }
@@ -199,8 +226,22 @@ pub fn parse(key: &[u8; 4], data: &[u8], cged: Option<&[u8]>, channels: Channels
     a
 }
 
+/// `PcBC`: PhotoCraft's JSON payload for [`Adjustment::BasicColor`]. Photoshop has no Basic Color
+/// adjustment, so the block is ignored there; see [`write`] for the neutral fallback written
+/// beside it. The PSD writer pads an odd-length block with one trailing zero byte (inside the
+/// declared length), which is not part of the JSON, so padding is trimmed before reading.
+fn read_basic_color(data: &[u8]) -> Result<Adjustment, String> {
+    let end = data.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
+    let a: Adjustment = serde_json::from_slice(&data[..end]).map_err(|e| format!("unreadable settings ({e})"))?;
+    match a {
+        a @ Adjustment::BasicColor { .. } => Ok(a),
+        other => Err(format!("it holds {} settings, not Basic Color", other.label())),
+    }
+}
+
 fn parse_any(key: &[u8; 4], data: &[u8], cged: Option<&[u8]>) -> Adjustment {
     let parsed = match key {
+        BASIC_COLOR_KEY => read_basic_color(data).ok(),
         b"nvrt" => Some(Adjustment::Invert),
         b"thrs" => be16(data, 0).map(|v| Adjustment::Threshold { level: f32::from(v) / 255.0 }),
         b"post" => be16(data, 0).map(|v| Adjustment::Posterize { levels: u32::from(v) }),
@@ -592,9 +633,21 @@ pub fn write(adj: &Adjustment) -> Vec<([u8; 4], Vec<u8>)> {
     let mut v = Vec::new();
     match adj {
         Adjustment::Invert => return vec![(*b"nvrt", Vec::new())],
-        // Photoshop has no Basic Color block (the Lightroom-style Basic panel); native `.pcraft`
-        // keeps it, and a PSD save warns and writes no block rather than inventing one.
-        Adjustment::BasicColor { .. } => return Vec::new(),
+        Adjustment::BasicColor { .. } => {
+            // Photoshop has no Basic Color adjustment (the Lightroom-style Basic panel): without
+            // any block it would reopen the layer as empty pixels. `PcBC` keeps the settings for
+            // PhotoCraft (first in `ADJUSTMENT_KEYS`, so our import prefers it), while the
+            // neutral Brightness/Contrast written beside it (`brit` + its `CgEd` descriptor)
+            // makes Photoshop open a valid no-op adjustment layer. A Photoshop edit of that layer
+            // becomes Brightness/Contrast and drops the Basic Color settings, which is the
+            // accepted limit of a PSD round trip.
+            let mut blocks = Vec::with_capacity(3);
+            if let Ok(json) = serde_json::to_vec(adj) {
+                blocks.push((*BASIC_COLOR_KEY, json));
+            }
+            blocks.extend(write(&Adjustment::BrightnessContrast { brightness: 0.0, contrast: 0.0, legacy: false }));
+            return blocks;
+        }
         Adjustment::Threshold { level } => {
             put16(&mut v, q255(*level).max(1));
             put16(&mut v, 0);
@@ -1011,6 +1064,53 @@ mod tests {
         rt(Adjustment::ChannelMixer { matrix: [[0.4, 0.4, 0.2, 0.1], [0.0, 1.0, 0.0, 0.0], [-2.0, 0.0, 2.0, 0.0]], monochrome: true });
         let id = photocraft_cms::lutfile::LutFile::identity(5);
         rt(Adjustment::ColorLookup { name: "Look.cube".into(), lut: Some(std::sync::Arc::new(id.data)), size: 5, tetrahedral: false, dither: true });
+    }
+
+    /// Basic Color is PhotoCraft-only: `PcBC` keeps every parameter for our own reopen, and the
+    /// neutral `brit`/`CgEd` beside it keep the PSD a valid no-op adjustment in Photoshop (which
+    /// cannot read Basic Color and drops these settings if it edits the layer).
+    #[test]
+    fn basic_color_round_trips_with_a_neutral_photoshop_fallback() {
+        let a = Adjustment::BasicColor {
+            temperature: 45.0,
+            tint: -25.0,
+            exposure: 0.6,
+            contrast: 30.0,
+            highlights: -40.0,
+            shadows: 35.0,
+            whites: 15.0,
+            blacks: -20.0,
+            vibrance: 40.0,
+            saturation: -15.0,
+            hsl_hue: [5.0, -10.0, 15.0, -20.0, 25.0, -30.0, 35.0, -40.0],
+            hsl_sat: [0.0, 10.0, -10.0, 20.0, -20.0, 30.0, -30.0, 40.0],
+            hsl_lum: [-5.0, 5.0, -15.0, 15.0, -25.0, 25.0, -35.0, 35.0],
+        };
+        let blocks = write(&a);
+        assert_eq!(blocks.len(), 3, "{blocks:?}");
+        assert_eq!(blocks[0].0, *BASIC_COLOR_KEY, "PhotoCraft's block comes first");
+        assert_eq!(parse(&blocks[0].0, &blocks[0].1, None, Channels::Rgb), a);
+        // The importer checks keys in this order, so `PcBC` wins over the neutral fallback.
+        assert_eq!(ADJUSTMENT_KEYS[0], BASIC_COLOR_KEY);
+        let brit = blocks.iter().find(|(k, _)| k == b"brit").map(|(_, d)| d.clone()).expect("neutral brit block");
+        let cged = blocks.iter().find(|(k, _)| k == b"CgEd").map(|(_, d)| &d[..]).expect("CgEd descriptor");
+        assert_eq!(
+            parse(b"brit", &brit, Some(cged), Channels::Rgb),
+            Adjustment::BrightnessContrast { brightness: 0.0, contrast: 0.0, legacy: false },
+            "Photoshop sees a neutral no-op Brightness/Contrast"
+        );
+        // The PSD writer pads an odd block with a zero byte inside its length: still readable.
+        let mut padded = blocks[0].1.clone();
+        padded.push(0);
+        assert_eq!(parse(&blocks[0].0, &padded, None, Channels::Rgb), a);
+        assert_eq!(label(BASIC_COLOR_KEY), "Basic Color");
+        // Malformed and non-Basic Color payloads stay raw, with a reason for the import warning.
+        assert!(matches!(parse(BASIC_COLOR_KEY, b"not json", None, Channels::Rgb), Adjustment::Unsupported { .. }));
+        assert!(unreadable_reason(BASIC_COLOR_KEY, b"not json").is_some_and(|r| r.contains("unreadable settings")));
+        let invert = serde_json::to_vec(&Adjustment::Invert).expect("serialize");
+        assert!(matches!(parse(BASIC_COLOR_KEY, &invert, None, Channels::Rgb), Adjustment::Unsupported { .. }));
+        assert!(unreadable_reason(BASIC_COLOR_KEY, &invert).is_some_and(|r| r.contains("Invert")));
+        assert_eq!(unreadable_reason(BASIC_COLOR_KEY, &blocks[0].1), None);
     }
 
     #[test]

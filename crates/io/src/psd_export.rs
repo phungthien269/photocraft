@@ -619,7 +619,10 @@ impl Ex {
                     raw.retain(|(k, _)| !adjust_map::ADJUSTMENT_KEYS.contains(&k) && k != b"CgEd");
                     let w = adjust_map::write(a);
                     if w.is_empty() {
-                        self.warnings.push(format!("layer \"{}\": {} adjustment is not yet written to PSD", l.name, a.label()));
+                        // Every adjustment kind has an encoding (Basic Color through `PcBC` and
+                        // its neutral Brightness/Contrast): only a raw `Unsupported` block
+                        // without a four-byte key gets here.
+                        self.warnings.push(format!("layer \"{}\": {} adjustment has no PSD encoding and was not written", l.name, a.label()));
                     }
                     // Photoshop's `clrL` descriptor has no interpolation setting, so the
                     // reopened layer renders trilinear.
@@ -2029,6 +2032,56 @@ mod tests {
         let photocraft_doc::Adjustment::PhotoFilter { color: back, density, .. } = reread else { panic!("{reread:?}") };
         assert!(back.iter().zip(color).all(|(b, c)| (b - c).abs() <= 1.0 / 65535.0), "{back:?} vs {color:?}");
         assert_eq!(density, 0.5);
+    }
+
+    /// Basic Color is PhotoCraft-only. A PSD save writes `PcBC` (our JSON, reopened as Basic
+    /// Color here) beside a neutral Brightness/Contrast, so Photoshop opens a valid no-op
+    /// adjustment layer instead of empty pixels. Photoshop cannot read Basic Color itself; its
+    /// edit of that layer would drop the settings, which is the accepted limit of this round trip.
+    #[test]
+    fn basic_color_round_trips_with_a_neutral_brightness_contrast() {
+        let adjustment = photocraft_doc::Adjustment::BasicColor {
+            temperature: 30.0,
+            tint: -10.0,
+            exposure: 0.5,
+            contrast: 20.0,
+            highlights: -25.0,
+            shadows: 15.0,
+            whites: 5.0,
+            blacks: -5.0,
+            vibrance: 25.0,
+            saturation: -10.0,
+            hsl_hue: [0.0, 5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0],
+            hsl_sat: [0.0, -5.0, 5.0, -10.0, 10.0, -15.0, 15.0, -20.0],
+            hsl_lum: [5.0, 0.0, -5.0, 0.0, 5.0, 0.0, -5.0, 0.0],
+        };
+        let mut doc =
+            Document::with_background("Basic Color PSD", photocraft_geom::Size::new(16, 12), ColorMode::Rgb, SampleType::U8, photocraft_doc::Color::WHITE);
+        doc.layers.push(Layer::new("Basic Color", LayerContent::Adjustment(adjustment.clone())));
+        let (file, warnings) = document_to_psd_with(&doc, &PsdExportOptions::default());
+        assert!(!warnings.iter().any(|w| w.contains("not yet written") || w.contains("no PSD encoding")), "{warnings:?}");
+
+        let rec = file.layers().iter().find(|l| l.blocks.iter().any(|b| b.key == *b"PcBC")).expect("the Basic Color layer carries PcBC");
+        let block = |key: &[u8; 4]| rec.blocks.iter().find(|b| &b.key == key).map(|b| b.data.clone());
+        let pcbc = block(b"PcBC").expect("PhotoCraft Basic Color block");
+        let brit = block(b"brit").expect("neutral Brightness/Contrast block");
+        let cged = block(b"CgEd").expect("Brightness/Contrast descriptor");
+        assert_eq!(crate::adjust_map::parse(b"PcBC", &pcbc, None, crate::adjust_map::Channels::Rgb), adjustment);
+        assert_eq!(
+            crate::adjust_map::parse(b"brit", &brit, Some(&cged), crate::adjust_map::Channels::Rgb),
+            photocraft_doc::Adjustment::BrightnessContrast { brightness: 0.0, contrast: 0.0, legacy: false },
+            "Photoshop opens a neutral no-op adjustment"
+        );
+
+        // Reopened from the written bytes: still Basic Color, with no unsupported-block warning.
+        let bytes = file.to_bytes().unwrap();
+        let imported = crate::import("basic-color.psd", &bytes).unwrap();
+        assert_eq!(imported.document.layers[1].content, LayerContent::Adjustment(adjustment.clone()));
+        assert!(!imported.warnings.iter().any(|w| w.contains("could not be read") || w.contains("no effect")), "{:?}", imported.warnings);
+        // A second save keeps it a Basic Color layer.
+        let again = PsdFile::from_bytes(&document_to_psd(&imported.document).to_bytes().unwrap()).unwrap();
+        let (back, _) = crate::psd_import::psd_to_document(&again);
+        assert_eq!(back.layers[1].content, LayerContent::Adjustment(adjustment));
     }
 
     #[test]

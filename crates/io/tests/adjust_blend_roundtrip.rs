@@ -66,6 +66,25 @@ fn adjustments() -> Vec<(Adjustment, bool)> {
             true,
         ),
         (Adjustment::Exposure { exposure: 0.75, offset: -0.0125, gamma: 0.9 }, true),
+        // PhotoCraft-only: `PcBC` carries it, with a neutral Brightness/Contrast for Photoshop.
+        (
+            Adjustment::BasicColor {
+                temperature: 45.0,
+                tint: -25.0,
+                exposure: 0.6,
+                contrast: 30.0,
+                highlights: -40.0,
+                shadows: 35.0,
+                whites: 15.0,
+                blacks: -20.0,
+                vibrance: 40.0,
+                saturation: -15.0,
+                hsl_hue: [5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -5.0],
+                hsl_sat: [0.0, 10.0, 0.0, -10.0, 0.0, 5.0, 0.0, -5.0],
+                hsl_lum: [0.0, 0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0],
+            },
+            true,
+        ),
         (Adjustment::Vibrance { vibrance: 60.0, saturation: -25.0 }, true),
         (Adjustment::HueSaturation { hue: 40.0, saturation: -30.0, lightness: 10.0, colorize: false, ranges: HueRange::defaults() }, true),
         (Adjustment::HueSaturation { hue: 200.0, saturation: 50.0, lightness: -10.0, colorize: true, ranges: HueRange::defaults() }, true),
@@ -104,8 +123,6 @@ fn adjustments() -> Vec<(Adjustment, bool)> {
         (Adjustment::Unsupported { psd_key: "selc".into(), raw: vec![0, 1, 0, 0] }, true),
     ];
     // Compile-time guard: a new Adjustment kind must be added to the list above.
-    // Basic Color is deliberately absent: PSD has no block for it, so the dedicated test below
-    // checks the warning + drop policy instead of the generic three-block round trip.
     for (a, _) in &all {
         match a {
             Adjustment::BrightnessContrast { .. }
@@ -204,10 +221,11 @@ fn every_adjustment_kind_round_trips_16bit() {
     }
 }
 
-/// Basic Color has no PSD block: the layer is kept (as an empty pixel layer) with a warning,
-/// while native `.pcraft` keeps the adjustment exactly.
+/// Basic Color is PhotoCraft-only: a PSD save writes `PcBC` (reopened here as Basic Color) plus a
+/// neutral Brightness/Contrast (Photoshop cannot read Basic Color, so it opens a no-op layer).
+/// Native `.pcraft` keeps the adjustment exactly.
 #[test]
-fn basic_color_survives_pcraft_and_warns_when_dropped_from_psd() {
+fn basic_color_round_trips_through_psd_and_pcraft() {
     let adj = Adjustment::BasicColor {
         temperature: 45.0,
         tint: -25.0,
@@ -220,7 +238,7 @@ fn basic_color_survives_pcraft_and_warns_when_dropped_from_psd() {
         vibrance: 40.0,
         saturation: -15.0,
         hsl_hue: [5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -5.0],
-        hsl_sat: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        hsl_sat: [0.0, 10.0, 0.0, -10.0, 0.0, 5.0, 0.0, -5.0],
         hsl_lum: [0.0, 0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0],
     };
     let mut d = Document::new("basic color", photocraft_geom::Size::new(16, 12), ColorMode::Rgb, SampleType::U8);
@@ -229,16 +247,18 @@ fn basic_color_survives_pcraft_and_warns_when_dropped_from_psd() {
     d.layers.push(Layer::new("Basic Color", LayerContent::Adjustment(adj.clone())));
     let r = export(&d, "x.psd", &ExportOptions::default()).expect("export");
     assert!(
-        r.warnings.iter().any(|w| w.contains("\"Basic Color\"") && w.contains("not yet written")),
-        "export must warn about the unwritten adjustment: {:?}",
+        !r.warnings.iter().any(|w| w.contains("not yet written") || w.contains("no PSD encoding")),
+        "Basic Color is written, not dropped: {:?}",
         r.warnings
     );
     let file = PsdFile::from_bytes(&r.bytes).expect("parse");
     let blocks = file.layers().iter().filter(|l| l.blocks.iter().any(|b| ADJUSTMENT_KEYS.contains(&&b.key))).count();
-    assert_eq!(blocks, 0, "no adjustment block is written for Basic Color");
-    let back = import("x.psd", &r.bytes).expect("import").document;
+    assert_eq!(blocks, 1, "the Basic Color layer is written as an adjustment");
+    let imported = import("x.psd", &r.bytes).expect("import");
+    assert!(!imported.warnings.iter().any(|w| w.contains("could not be read") || w.contains("no effect")), "{:?}", imported.warnings);
+    let back = imported.document;
     assert_eq!(back.layers.len(), d.layers.len(), "the layer itself is kept");
-    assert!(!back.layers.iter().any(|l| matches!(l.content, LayerContent::Adjustment(_))), "PSD import must not invent a Basic Color adjustment");
+    assert_eq!(back.layers[1].content, LayerContent::Adjustment(adj.clone()), "the Basic Color settings round-trip");
     // Native format round-trips the model exactly.
     let bytes = photocraft_format::save_to_bytes(&d, &Default::default()).expect("save .pcraft");
     let again = photocraft_format::load_from_bytes(&bytes).expect("load .pcraft");
