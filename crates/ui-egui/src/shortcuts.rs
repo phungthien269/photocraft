@@ -572,6 +572,22 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if new_layer_without_dialog(app, ctx) {
         return;
     }
+    // A lasso gesture owns Enter and Escape before the global shortcuts: ↩ commits and Esc
+    // cancels, whatever modifiers the Alt-clicks left on the key. ⌘/Ctrl stays for commands
+    // (⌘↩ loads the selected path as a selection).
+    if !editing && crate::lasso_ui::active(app) {
+        let mods = ctx.input(|i| i.modifiers);
+        if !mods.command && !mods.ctrl {
+            if ctx.input_mut(|i| i.consume_key(mods, Key::Escape)) {
+                app.drag = None;
+                return;
+            }
+            if ctx.input_mut(|i| i.consume_key(mods, Key::Enter)) {
+                crate::lasso_ui::commit(app);
+                return;
+            }
+        }
+    }
     // Registry, UI and menu-catalogue shortcuts (see [`crate::shortcut_dispatch::bindings`]).
     if dispatch_pressed(app, ctx, focus, editing) {
         return;
@@ -603,18 +619,6 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         if pressed(Key::Escape) {
             crate::retouch_ui::remove_pending_cancel(app);
-            return;
-        }
-    }
-    // Enter / Escape commit or cancel in-progress tool state (polygonal lasso, crop).
-    if crate::lasso_ui::active(app) {
-        let mods = ctx.input(|i| i.modifiers);
-        if ctx.input_mut(|i| i.consume_key(mods, Key::Escape)) {
-            app.drag = None;
-            return;
-        }
-        if ctx.input_mut(|i| i.consume_key(mods, Key::Enter)) {
-            crate::lasso_ui::commit(app);
             return;
         }
     }

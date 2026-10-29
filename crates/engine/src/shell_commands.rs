@@ -57,7 +57,12 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("window.toggle.color", "Color", &["Window"], Some("F6")),
     ("window.toggle.brushSettings", "Brush Settings", &["Window"], Some("F5")),
     ("window.toggle.brushes", "Brushes", &["Window"], None),
-    ("window.toggle.retouchAI", "Retouch AI", &["Window"], None),
+    ("window.toggle.retouchAI", "Retouch AI", &["Window"], Some("Alt+R")),
+    // Retouch AI's panel actions, bindable from Edit › Keyboard Shortcuts as well as the panel.
+    ("retouch.ai.analyze", "Retouch AI: Analyze", &["Window", "Retouch AI"], Some("Alt+A")),
+    ("retouch.ai.run", "Retouch AI: Run Selected", &["Window", "Retouch AI"], Some("Alt+Enter")),
+    ("retouch.ai.skinSmooth", "Retouch AI: Skin Smooth Brush", &["Window", "Retouch AI"], Some("Alt+S")),
+    ("retouch.ai.evenTone", "Retouch AI: Even Tone Brush", &["Window", "Retouch AI"], Some("Alt+E")),
     ("window.toggle.basicColor", "Basic Color", &["Window"], None),
     ("window.toggle.colorPresets", "Color Presets", &["Window"], None),
     ("window.toggle.navigator", "Navigator", &["Window"], None),

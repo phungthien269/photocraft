@@ -193,12 +193,14 @@ fn every_displayed_shortcut_dispatches_from_where_focus_usually_is() {
         let mut h = harness();
         set_dry_run(&h.ctx, true);
         put_focus(&mut h, place);
-        let focus = Focus::of(&h.ctx);
         let items = crate::menus::menu_items(h.state());
         for (id, sc, live) in displayed(h.state()) {
             if !live {
                 continue;
             }
+            // A value field commits and drops focus when Enter arrives (Alt+Enter is Retouch AI's
+            // Run Selected), so follow the focus that is actually there for each press.
+            let focus = Focus::of(&h.ctx);
             let parsed = parse(&sc).unwrap();
             press(&mut h, &sc);
             let log = take_log(&h.ctx);
@@ -217,7 +219,7 @@ fn every_displayed_shortcut_dispatches_from_where_focus_usually_is() {
             }
         }
         // Tool letters from the tools panel tooltips ("Brush Tool  (B)").
-        if !matches!(focus, Focus::Text) {
+        if !matches!(Focus::of(&h.ctx), Focus::Text) {
             for t in Tool::ALL.into_iter().filter(|t| t.key() != '\0') {
                 h.state_mut().ui.tool = if t.key() == 'H' { Tool::Move } else { Tool::Hand };
                 press(&mut h, &t.key().to_string());

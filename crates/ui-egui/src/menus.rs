@@ -99,6 +99,10 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     if let Some(r) = crate::tool_reset::invoke(app, id, &params) {
         return r;
     }
+    // Window › Retouch AI's panel actions, and their Edit › Keyboard Shortcuts bindings.
+    if let Some(r) = crate::retouch_ai_panel::menu(app, id) {
+        return r;
+    }
     // A filter on a type layer asks to rasterize it first (#4303).
     if let Some(r) = crate::rasterize_prompt::intercept_filter(app, id, &params) {
         return r;
@@ -720,6 +724,8 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
             app.session.active().is_some() && app.services.export.is_some()
         }
         i if i.starts_with("window.toggle.") => true,
+        // The panel reports "Open an image to start" or its own failure without a document.
+        i if i.starts_with("retouch.ai.") => true,
         "window.togglePanels" => true,
         // With one document open the key stays quiet, as in Photoshop, rather than reporting why.
         "window.nextDocument" | "window.previousDocument" => app.session.active().is_some(),

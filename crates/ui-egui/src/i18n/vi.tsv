@@ -3733,6 +3733,10 @@ curves	Smooth	Làm mượt
 	Behind	Phía sau
 # Retouch AI panel (Window › Retouch AI) and its window.toggle.retouchAI command
 	Retouch AI	Retouch AI
+	Retouch AI: Analyze	Retouch AI: Phân tích
+	Retouch AI: Run Selected	Retouch AI: Chạy đã chọn
+	Retouch AI: Skin Smooth Brush	Retouch AI: Cọ làm mềm da
+	Retouch AI: Even Tone Brush	Retouch AI: Cọ làm đều tông da
 	Engine	Engine
 	Local • CPU	Cục bộ • CPU
 	Analyze	Phân tích

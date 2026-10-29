@@ -1211,6 +1211,29 @@ fn folder_field(ui: &mut egui::Ui, label: &str, value: &mut String, pick: Action
     });
 }
 
+/// The panel's commands (`retouch.ai.*`): Window › Retouch AI and Edit › Keyboard Shortcuts.
+/// Each one shows the panel before running, so its result is visible whichever way it was called.
+pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, String>> {
+    let action = match id {
+        "retouch.ai.analyze" => "analyze",
+        "retouch.ai.run" => "run",
+        "retouch.ai.skinSmooth" => "skinSmooth",
+        "retouch.ai.evenTone" => "evenTone",
+        _ => return None,
+    };
+    app.ui.panels.retouch_ai = true;
+    // A shortcut can run before the panel has drawn once, when the state has no tool rows yet.
+    app.ui.retouch_ai.ensure_tools();
+    match action {
+        "analyze" => analyze(app),
+        "run" => run_combo(app),
+        "skinSmooth" => run_skin_smooth_brush(app),
+        "evenTone" => run_even_tone_brush(app),
+        _ => return None,
+    }
+    Some(Ok(json!({"action": action})))
+}
+
 /// Window › Retouch AI. Draws nothing when the menu closed it; never needs a document.
 pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.panels.retouch_ai {
@@ -1473,6 +1496,78 @@ mod tests {
         assert!(!app.ui.panels.retouch_ai);
         crate::menus::invoke(&mut app, &ctx, "window.panel.retouchAI", json!({})).expect("panel alias");
         assert!(app.ui.panels.retouch_ai);
+    }
+
+    /// The four panel actions work as commands (Window › Retouch AI and Edit › Keyboard Shortcuts):
+    /// each shows the panel and reports its result, with or without a document.
+    #[test]
+    fn menu_commands_open_the_panel_and_run_their_action() {
+        const ACTIONS: [(&str, &str); 4] =
+            [("retouch.ai.analyze", "analyze"), ("retouch.ai.run", "run"), ("retouch.ai.skinSmooth", "skinSmooth"), ("retouch.ai.evenTone", "evenTone")];
+        let ctx = egui::Context::default();
+        let mut app = app();
+        for (id, action) in ACTIONS {
+            app.ui.panels.retouch_ai = false;
+            app.ui.retouch_ai.status.clear();
+            app.ui.retouch_ai.status_error = false;
+            let value = crate::menus::invoke(&mut app, &ctx, id, json!({})).expect("command");
+            assert_eq!(value["action"], action, "{id} returns its action");
+            assert!(app.ui.panels.retouch_ai, "{id} opens the panel");
+            assert!(!app.ui.retouch_ai.status.is_empty(), "{id} reports a result with no document");
+            if id != "retouch.ai.analyze" {
+                assert_eq!(app.ui.retouch_ai.status, "Open an image to start", "{id} says why it can't run");
+            }
+        }
+        assert!(menu(&mut app, "retouch.ai.missing").is_none(), "unknown ids are left to the other handlers");
+
+        // With a document the actions reach their engine command and update the panel's status.
+        app.run("file.new", json!({"width": 64, "height": 64})).expect("document");
+        for (id, action) in ACTIONS {
+            app.ui.retouch_ai.status.clear();
+            let value = crate::menus::invoke(&mut app, &ctx, id, json!({})).expect("command");
+            assert_eq!(value["action"], action);
+            assert!(app.ui.panels.retouch_ai, "{id} keeps the panel open");
+            let status = &app.ui.retouch_ai.status;
+            assert!(!status.is_empty(), "{id} reports the run");
+            match action {
+                "analyze" => assert!(status.starts_with("Faces:"), "the analysis line: {status}"),
+                "run" => assert!(status.contains("Created"), "the run line: {status}"),
+                _ => {}
+            }
+        }
+    }
+
+    /// The new commands are listed by Edit › Keyboard Shortcuts with their defaults, and the
+    /// dispatch table binds those keys to the same ids.
+    #[test]
+    fn shortcut_settings_list_the_retouch_actions_and_their_defaults() {
+        let mut app = app();
+        let items = crate::prefs_ui::shortcut_items(&app);
+        let table = crate::shortcut_dispatch::bindings(&app);
+        for (id, key) in
+            [("retouch.ai.analyze", "Alt+A"), ("retouch.ai.run", "Alt+Enter"), ("retouch.ai.skinSmooth", "Alt+S"), ("retouch.ai.evenTone", "Alt+E")]
+        {
+            assert_eq!(crate::shortcuts::default_shortcut(id).as_deref(), Some(key), "{id} default");
+            let item = items.iter().find(|item| item.0 == id).unwrap_or_else(|| panic!("{id} is listed"));
+            assert_eq!(item.2, ["Window", "Retouch AI"], "{id} sits under the Retouch AI submenu");
+            assert_eq!(item.3.as_deref(), Some(key), "{id} shows its default");
+            let parsed = crate::shortcuts::parse(key).unwrap_or_else(|| panic!("{id}: unparsable {key}"));
+            assert!(table.iter().any(|(bound, sc)| bound == id && *sc == parsed), "{id} is bound to {key}");
+        }
+        let toggle = items.iter().find(|item| item.0 == "window.toggle.retouchAI").expect("the panel toggle is listed");
+        assert_eq!(toggle.2, ["Window"], "the toggle keeps its Window › Retouch AI item");
+        assert_eq!(toggle.3.as_deref(), Some("Alt+R"));
+
+        // The dialog's overrides are the only store: rebinding and clearing reach dispatch.
+        let rebound = crate::shortcuts::parse("Alt+Shift+A").expect("rebound key");
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("retouch.ai.analyze".into(), "Alt+Shift+A".into());
+        });
+        assert!(crate::shortcut_dispatch::bindings(&app).iter().any(|(id, sc)| id == "retouch.ai.analyze" && *sc == rebound));
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("retouch.ai.analyze".into(), String::new());
+        });
+        assert!(!crate::shortcut_dispatch::bindings(&app).iter().any(|(id, _)| id == "retouch.ai.analyze"), "a cleared shortcut is unbound");
     }
 
     #[test]
