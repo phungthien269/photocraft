@@ -1574,11 +1574,10 @@ fn to_row(t: &[f32]) -> [f32; 4096] {
 pub fn adjustment_on_gpu(adj: &Adjustment, mode: photocraft_color::ColorMode) -> bool {
     use photocraft_compose::adjust::{cmyk_channel_adjustment, lab_channel_adjustment};
     // Basic Color ignores its colour sliders in grayscale-family documents, a rule only the CPU
-    // owns (compose::adjust::apply_in), so those modes fall back. The Color Mixer's HSL stage is
-    // CPU-only too: a non-neutral mixer falls back rather than differing from the oracle.
-    if let Adjustment::BasicColor { hsl_hue, hsl_sat, hsl_lum, .. } = adj
-        && (matches!(mode, photocraft_color::ColorMode::Grayscale | photocraft_color::ColorMode::Duotone | photocraft_color::ColorMode::Bitmap)
-            || !photocraft_color::hsl::is_neutral(*hsl_hue, *hsl_sat, *hsl_lum))
+    // owns (compose::adjust::apply_in), so those modes fall back. Its Color Mixer runs here: the
+    // bands ride in LUT row 0 and `case 18` applies `compose::hsl::mix` after Presence.
+    if matches!(adj, Adjustment::BasicColor { .. })
+        && matches!(mode, photocraft_color::ColorMode::Grayscale | photocraft_color::ColorMode::Duotone | photocraft_color::ColorMode::Bitmap)
     {
         return false;
     }
@@ -1668,16 +1667,40 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
                 (8, p, None)
             }
         }
-        Adjustment::BasicColor { temperature, tint, exposure, contrast, highlights, shadows, whites, blacks, vibrance, saturation, .. } => {
+        Adjustment::BasicColor {
+            temperature,
+            tint,
+            exposure,
+            contrast,
+            highlights,
+            shadows,
+            whites,
+            blacks,
+            vibrance,
+            saturation,
+            hsl_hue,
+            hsl_sat,
+            hsl_lum,
+        } => {
             // compose::adjust::basic_color_px:
             // p0 = temperature, tint, exposure, contrast; p1 = highlights, shadows, whites, blacks;
             // p2 = vibrance, saturation, exposure transfer gamma, unused;
-            // p3 = presence transfer gamma, presence ceiling (F32_MAX for 32-bit), unused, unused.
+            // p3 = presence transfer gamma, presence ceiling (F32_MAX for 32-bit), Color Mixer
+            // flag, unused. A non-neutral mixer packs its bands in LUT row 0 (hue 0..8, saturation
+            // 8..16, luminance 16..24, -100..=100), read texel-exact by `case 18`.
             p[0] = [temperature / 100.0, tint / 100.0, *exposure, contrast / 100.0];
             p[1] = [highlights / 100.0, shadows / 100.0, whites / 100.0, blacks / 100.0];
             p[2] = [vibrance / 100.0, saturation / 100.0, transfer_exponent(transfer.for_exposure()), 0.0];
-            p[3] = [transfer_exponent(transfer), if depth == photocraft_color::SampleType::F32 { f32::MAX } else { 1.0 }, 0.0, 0.0];
-            (18, p, None)
+            let mixed = !photocraft_color::hsl::is_neutral(*hsl_hue, *hsl_sat, *hsl_lum);
+            p[3] = [transfer_exponent(transfer), if depth == photocraft_color::SampleType::F32 { f32::MAX } else { 1.0 }, if mixed { 1.0 } else { 0.0 }, 0.0];
+            let lut = mixed.then(|| {
+                let mut row = [0.0f32; 4096];
+                row[..8].copy_from_slice(hsl_hue);
+                row[8..16].copy_from_slice(hsl_sat);
+                row[16..24].copy_from_slice(hsl_lum);
+                vec![row]
+            });
+            (18, p, lut)
         }
         Adjustment::Vibrance { vibrance, saturation } => {
             // compose::adjust::vibrance_px; 32-bit samples aren't clipped at 1.
@@ -1886,12 +1909,30 @@ mod tests {
         for mode in [ColorMode::Rgb, ColorMode::Lab, ColorMode::Cmyk] {
             assert!(adjustment_on_gpu(&basic, mode), "{mode:?}");
         }
-        // A non-neutral Color Mixer runs on the CPU oracle.
-        let mut mixed = basic;
-        if let Adjustment::BasicColor { hsl_hue, .. } = &mut mixed {
+        // A non-neutral Color Mixer runs on the GPU: its bands ride in LUT row 0, flagged in
+        // p3.z, and only grayscale-family documents still fall back.
+        let mut mixed = basic.clone();
+        if let Adjustment::BasicColor { hsl_hue, hsl_sat, hsl_lum, .. } = &mut mixed {
             hsl_hue[0] = 50.0;
+            hsl_sat[3] = -20.0;
+            hsl_lum[7] = 15.0;
         }
-        assert!(!adjustment_on_gpu(&mixed, ColorMode::Rgb));
+        for mode in [ColorMode::Rgb, ColorMode::Lab, ColorMode::Cmyk] {
+            assert!(adjustment_on_gpu(&mixed, mode), "{mode:?}");
+        }
+        for mode in [ColorMode::Grayscale, ColorMode::Duotone, ColorMode::Bitmap] {
+            assert!(!adjustment_on_gpu(&mixed, mode), "{mode:?}");
+        }
+        let (kind, p, lut) = adjustment_program(&mixed, Transfer::Srgb, SampleType::U8);
+        assert_eq!((kind, p[3][2]), (18, 1.0), "the mixer flag rides in p3.z");
+        let row = lut.expect("the mixer's bands upload as one LUT row")[0];
+        assert_eq!(&row[..8], &[50.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(&row[8..16], &[0.0, 0.0, 0.0, -20.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(&row[16..24], &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 15.0]);
+        // A neutral mixer uploads no row and leaves the flag clear.
+        let (_, p, lut) = adjustment_program(&basic, Transfer::Srgb, SampleType::U8);
+        assert_eq!(p[3][2], 0.0);
+        assert!(lut.is_none());
     }
 
     #[test]

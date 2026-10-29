@@ -788,8 +788,8 @@ fn basic_color_at_every_depth_and_gray_fallback() {
             hsl_sat: [0.0; 8],
             hsl_lum: [0.0; 8],
         },
-        // The Color Mixer runs on the CPU oracle (the GPU plan falls back), so this case checks
-        // the shared HSL math against the reference path too.
+        // The Color Mixer runs on the GPU: its bands ride in LUT row 0 and `case 18` applies
+        // `compose::hsl::mix` after Presence.
         Adjustment::BasicColor {
             temperature: 0.0,
             tint: 0.0,
@@ -829,15 +829,6 @@ fn basic_color_at_every_depth_and_gray_fallback() {
         for (i, adj) in cases.iter().enumerate() {
             d.layers.truncate(1);
             d.layers.push(Layer::new("bc", LayerContent::Adjustment(adj.clone())));
-            // The Color Mixer's HSL stage is CPU-only on purpose; the GPU compositor asks the
-            // caller to fall back. Keep exercising the CPU path for that case.
-            if let Adjustment::BasicColor { hsl_hue, hsl_sat, hsl_lum, .. } = adj
-                && !photocraft_color::hsl::is_neutral(*hsl_hue, *hsl_sat, *hsl_lum)
-            {
-                let out = photocraft_compose::flatten(&d);
-                assert_eq!(out.px.len(), 37 * 23, "basic color {depth:?} #{i}: CPU fallback renders");
-                continue;
-            }
             check(&mut g, &d, &format!("basic color {depth:?} #{i}"));
         }
     }
@@ -852,6 +843,96 @@ fn basic_color_at_every_depth_and_gray_fallback() {
         // The CPU path is defined for these documents (no panic) and keeps the layer.
         let out = photocraft_compose::flatten(&d);
         assert_eq!(out.px.len(), 16 * 8, "{mode:?}");
+    }
+}
+
+/// The Color Mixer's eight bands run in the GPU's Basic Color kernel: hue, saturation and
+/// luminance shifts across the band centres, plus neutral greys that must stay untouched.
+#[test]
+fn basic_color_color_mixer_matches_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mixer = |hue: [f32; 8], sat: [f32; 8], lum: [f32; 8]| Adjustment::BasicColor {
+        temperature: 0.0,
+        tint: 0.0,
+        exposure: 0.0,
+        contrast: 0.0,
+        highlights: 0.0,
+        shadows: 0.0,
+        whites: 0.0,
+        blacks: 0.0,
+        vibrance: 0.0,
+        saturation: 0.0,
+        hsl_hue: hue,
+        hsl_sat: sat,
+        hsl_lum: lum,
+    };
+    let cases = [
+        // Every band shifted at once, with hue, saturation and luminance mixed.
+        mixer(
+            [40.0, -25.0, 0.0, 60.0, -50.0, 20.0, 0.0, -30.0],
+            [30.0, 0.0, -40.0, 0.0, 25.0, -60.0, 10.0, 0.0],
+            [-20.0, 15.0, 0.0, 30.0, 0.0, -35.0, 20.0, 0.0],
+        ),
+        // Extremes: hue ±30°, saturation to 0 and beyond 1, luminance ±2 stops.
+        mixer([100.0; 8], [-100.0; 8], [100.0; 8]),
+        mixer([-100.0; 8], [100.0; 8], [-100.0; 8]),
+        // Band edges: the hat weights split a colour between two neighbouring bands.
+        mixer([0.0; 8], [0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0, -50.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 25.0, 0.0]),
+        // The maximum shift on every band must leave neutrals alone.
+        mixer([100.0; 8], [100.0; 8], [100.0; 8]),
+        // Presence, then the mixer on the post-vibrance colour (Camera Raw's order).
+        Adjustment::BasicColor {
+            temperature: 0.0,
+            tint: 0.0,
+            exposure: 0.0,
+            contrast: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            whites: 0.0,
+            blacks: 0.0,
+            vibrance: 45.0,
+            saturation: -25.0,
+            hsl_hue: [20.0, 0.0, -40.0, 0.0, 30.0, 0.0, 0.0, -20.0],
+            hsl_sat: [0.0, 25.0, 0.0, -35.0, 0.0, 20.0, 0.0, 0.0],
+            hsl_lum: [10.0, 0.0, 0.0, 20.0, -15.0, 0.0, 0.0, 0.0],
+        },
+    ];
+    // Swatches at each band centre and between them, dull colours, and neutral greys.
+    let swatches = [
+        [1.0, 0.0, 0.0],
+        [1.0, 0.5, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.5],
+        [0.0, 0.5, 1.0],
+        [0.5, 0.0, 1.0],
+        [1.0, 0.0, 0.5],
+        [0.8, 0.3, 0.1],
+        [0.1, 0.4, 0.3],
+        [0.3, 0.35, 0.9],
+        [0.9, 0.2, 0.6],
+        [0.55, 0.5, 0.45],
+        [0.2, 0.25, 0.3],
+        [-0.2, 0.4, 0.1],
+        [0.0, 0.0, 0.0],
+        [0.25, 0.25, 0.25],
+        [0.5, 0.5, 0.5],
+        [0.75, 0.75, 0.75],
+        [1.0, 1.0, 1.0],
+        [0.02, 0.02, 0.021],
+    ];
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let mut d = Document::new("color mixer", Size::new(swatches.len() as u32, 1), ColorMode::Rgb, depth);
+        let fmt = d.pixel_format();
+        let mut layer = Layer::raster("swatches", fmt);
+        let data: Vec<f32> = swatches.iter().flat_map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        layer.surface_mut().unwrap().write_region(d.bounds(), &data);
+        d.layers = vec![layer];
+        for (i, adj) in cases.iter().enumerate() {
+            d.layers.truncate(1);
+            d.layers.push(Layer::new("bc", LayerContent::Adjustment(adj.clone())));
+            check(&mut g, &d, &format!("color mixer {depth:?} #{i}"));
+        }
     }
 }
 

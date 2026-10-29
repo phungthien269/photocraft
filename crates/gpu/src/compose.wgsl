@@ -609,6 +609,84 @@ fn basic_tone(l: f32, amount: f32, w: f32) -> f32 {
     return l + d * l;
 }
 
+// ---- Color Mixer (compose::hsl) --------------------------------------------------------------
+
+// Hat weight of one Color Mixer band at hue `h` (degrees): compose::hsl::band_weights. `centre`,
+// `prev` and `next` are the centres of the band and its two neighbours.
+fn mixer_band_w(h: f32, centre: f32, prev: f32, next: f32) -> f32 {
+    let diff = rem_euclid(h - centre + 540.0, 360.0) - 180.0;
+    let span = select(rem_euclid(centre - prev, 360.0), rem_euclid(next - centre, 360.0), diff >= 0.0);
+    return max(1.0 - abs(diff) / max(span, 1e-3), 0.0);
+}
+
+// compose::hsl::hsv_to_rgb: hue in degrees, saturation and value in 0..=1.
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> vec3<f32> {
+    let hh = rem_euclid(h, 360.0) / 60.0;
+    let c = v * s;
+    let x = c * (1.0 - abs(rem_euclid(hh, 2.0) - 1.0));
+    let sector = u32(hh);
+    var rgb = vec3<f32>(c, 0.0, x);
+    if (sector == 0u) { rgb = vec3<f32>(c, x, 0.0); }
+    else if (sector == 1u) { rgb = vec3<f32>(x, c, 0.0); }
+    else if (sector == 2u) { rgb = vec3<f32>(0.0, c, x); }
+    else if (sector == 3u) { rgb = vec3<f32>(0.0, x, c); }
+    else if (sector == 4u) { rgb = vec3<f32>(x, 0.0, c); }
+    let m = v - c;
+    return rgb + vec3<f32>(m);
+}
+
+// One Color Mixer band value: LUT row 0, hue bands 0..8, saturation 8..16, luminance 16..24,
+// texel-exact (the values are -100..=100, not a 0..1 ramp).
+fn mixer_band(i: i32) -> f32 {
+    return textureLoad(lut_tex, vec2<i32>(i, 0), 0).r;
+}
+
+// compose::hsl::mix: hue shifts ±30° at ±100, saturation scales around the colour's own
+// saturation, and luminance is a luma-preserving brightness shift weighted by that saturation (so
+// neutrals never gain chroma). Written without loops: FXC aborts on them inside `adjust`'s switch.
+fn color_mixer(c: vec3<f32>) -> vec3<f32> {
+    // Non-finite pixels pass through untouched, as on the CPU (naga has no isNan/isInf).
+    if (any(c != c) || any(abs(c) > vec3<f32>(3.0e38))) { return c; }
+    let cc = max(c, vec3<f32>(0.0));
+    let mx = max(max(cc.r, cc.g), cc.b);
+    let mn = min(min(cc.r, cc.g), cc.b);
+    let d = mx - mn;
+    var h = 0.0;
+    if (d > 1e-9) {
+        if (mx == cc.r) {
+            h = 60.0 * rem_euclid((cc.g - cc.b) / d, 6.0);
+        } else if (mx == cc.g) {
+            h = 60.0 * ((cc.b - cc.r) / d + 2.0);
+        } else {
+            h = 60.0 * ((cc.r - cc.g) / d + 4.0);
+        }
+    }
+    var s = 0.0;
+    if (mx > 1e-9) { s = d / mx; }
+    if (s <= 1e-4) { return c; }                                               // greys stay neutral
+    let w0 = mixer_band_w(h, 0.0, 300.0, 30.0);
+    let w1 = mixer_band_w(h, 30.0, 0.0, 60.0);
+    let w2 = mixer_band_w(h, 60.0, 30.0, 120.0);
+    let w3 = mixer_band_w(h, 120.0, 60.0, 180.0);
+    let w4 = mixer_band_w(h, 180.0, 120.0, 240.0);
+    let w5 = mixer_band_w(h, 240.0, 180.0, 270.0);
+    let w6 = mixer_band_w(h, 270.0, 240.0, 300.0);
+    let w7 = mixer_band_w(h, 300.0, 270.0, 0.0);
+    let dh = w0 * mixer_band(0) + w1 * mixer_band(1) + w2 * mixer_band(2) + w3 * mixer_band(3)
+        + w4 * mixer_band(4) + w5 * mixer_band(5) + w6 * mixer_band(6) + w7 * mixer_band(7);
+    let ds = w0 * mixer_band(8) + w1 * mixer_band(9) + w2 * mixer_band(10) + w3 * mixer_band(11)
+        + w4 * mixer_band(12) + w5 * mixer_band(13) + w6 * mixer_band(14) + w7 * mixer_band(15);
+    let dl = w0 * mixer_band(16) + w1 * mixer_band(17) + w2 * mixer_band(18) + w3 * mixer_band(19)
+        + w4 * mixer_band(20) + w5 * mixer_band(21) + w6 * mixer_band(22) + w7 * mixer_band(23);
+    let nh = h + dh / 100.0 * 30.0;
+    let ns = clamp(s * (1.0 + ds / 100.0), 0.0, 1.0);
+    var out = hsv_to_rgb(nh, ns, mx);
+    // Keep the luminance, then apply the luminance shift weighted by saturation.
+    let l1 = luma709(out);
+    if (l1 > 1e-6) { out = out * luma709(c) / l1; }
+    return out * pow(2.0, dl / 100.0 * s);
+}
+
 fn adjust(c: vec3<f32>) -> vec3<f32> {
     let hdr = (op.flags & F_HDR) != 0u;
     let p0 = op.p0;
@@ -698,7 +776,7 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
         case 18: {                                                             // Basic Color (compose::adjust::basic_color_px)
             // p0 = temperature, tint, exposure, contrast; p1 = highlights, shadows, whites, blacks;
             // p2 = vibrance, saturation, exposure transfer gamma, unused; p3 = presence transfer
-            // gamma, presence ceiling, unused, unused.
+            // gamma, presence ceiling, Color Mixer flag (bands in LUT row 0), unused.
             var gains = vec3(1.0 + 0.35 * p0.x, 1.0 - 0.25 * p0.y, 1.0 - 0.35 * p0.x);
             let lg = luma709(gains);
             let m = pow(2.0, p0.z);
@@ -720,17 +798,25 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
             ln = basic_tone(ln, p1.w, 1.0 - smoothstep01(0.0, 0.4, ln));
             if (l > 1e-4) { rgb = rgb * (ln / l); } else { rgb = vec3(ln); }
             if (!hdr) { rgb = clamp(rgb, vec3(0.0), vec3(1.0)); }
-            if (p2.x == 0.0 && p2.y == 0.0) { return rgb; }
-            // compose::adjust::vibrance_px: Vibrance (boost fit from VIBRANCE_BOOST) then
-            // Saturation towards 0.288 R + 0.712 G, through the document transfer.
-            var pres = vec3(t_decode(rgb.r, p3.x), t_decode(rgb.g, p3.x), t_decode(rgb.b, p3.x));
-            if (p2.x != 0.0) { pres = vibrance_lin(pres, p2.x, vec4(0.5001, 0.0887, 0.4374, 0.7573), vec3(-0.8113, 0.5154, 2.8026)); }
-            if (p2.y != 0.0) {
-                let grey = 0.288 * pres.r + 0.712 * pres.g;
-                pres = clamp(vec3(grey) + (1.0 + p2.y) * (pres - vec3(grey)), vec3(0.0), vec3(p3.y));
+            var out = rgb;
+            if (p2.x != 0.0 || p2.y != 0.0) {
+                // compose::adjust::vibrance_px: Vibrance (boost fit from VIBRANCE_BOOST) then
+                // Saturation towards 0.288 R + 0.712 G, through the document transfer.
+                var pres = vec3(t_decode(rgb.r, p3.x), t_decode(rgb.g, p3.x), t_decode(rgb.b, p3.x));
+                if (p2.x != 0.0) { pres = vibrance_lin(pres, p2.x, vec4(0.5001, 0.0887, 0.4374, 0.7573), vec3(-0.8113, 0.5154, 2.8026)); }
+                if (p2.y != 0.0) {
+                    let grey = 0.288 * pres.r + 0.712 * pres.g;
+                    pres = clamp(vec3(grey) + (1.0 + p2.y) * (pres - vec3(grey)), vec3(0.0), vec3(p3.y));
+                }
+                pres = clamp(pres, vec3(0.0), vec3(p3.y));
+                out = vec3(t_encode(pres.r, p3.x), t_encode(pres.g, p3.x), t_encode(pres.b, p3.x));
             }
-            pres = clamp(pres, vec3(0.0), vec3(p3.y));
-            return vec3(t_encode(pres.r, p3.x), t_encode(pres.g, p3.x), t_encode(pres.b, p3.x));
+            // Presence first, then the Color Mixer (Camera Raw's order).
+            if (p3.z > 0.5) {
+                out = color_mixer(out);
+                if (!hdr) { out = clamp(out, vec3(0.0), vec3(1.0)); }
+            }
+            return out;
         }
         case 10: {                                                             // Channel mixer (32-bit unclipped)
             let lo = select(0.0, -F32_MAX, hdr);
