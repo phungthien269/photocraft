@@ -292,6 +292,18 @@ pub fn tool_hint(id: &str) -> &'static str {
     tl!(tool_hint_source(id))
 }
 
+/// The shell command that runs one tool directly (`retouch.tool.<id>`).
+pub fn tool_command(id: &str) -> String {
+    format!("retouch.tool.{id}")
+}
+
+/// A tool row's tooltip: its hint, then the tool command's effective shortcut on a new line
+/// (`hint\nCtrl+Alt+3`); just the hint when the user removed the binding.
+fn tool_tip(app: &PhotocraftApp, id: &str) -> String {
+    let hint = tool_hint(id);
+    crate::shortcuts::shortcut_label(app, &tool_command(id)).map_or_else(|| hint.to_string(), |sc| format!("{hint}\n{sc}"))
+}
+
 /// A group's English source label; [`group_title`] translates it.
 fn group_source(index: usize) -> &'static str {
     TOOL_GROUPS.get(index).map_or("", |(_, label)| *label)
@@ -875,6 +887,11 @@ fn run_combo(app: &mut PhotocraftApp) {
     if !reference.is_empty() {
         params["referencePath"] = json!(reference);
     }
+    run_retouch(app, params, document);
+}
+
+/// Run one `retouchAI.run` payload, store its result layers and report on the panel's status line.
+fn run_retouch(app: &mut PhotocraftApp, params: Value, document: usize) {
     match app.run("retouchAI.run", params) {
         Ok(value) => {
             let created = value.get("layers").and_then(Value::as_array).map_or(0, Vec::len);
@@ -885,6 +902,29 @@ fn run_combo(app: &mut PhotocraftApp) {
         }
         Err(error) => set_status(&mut app.ui.retouch_ai, crate::i18n::fmt(tl!(text::RETOUCH_FAILED), &[("error", &error)]), true),
     }
+}
+
+/// Window › Retouch AI › Tools › <tool>, and `retouch.tool.<id>`'s shortcut: run that one tool at
+/// its current amount. The other tools' checkboxes stay as they are.
+fn run_tool(app: &mut PhotocraftApp, id: &str) {
+    let Some(document) = app.session.active_index() else {
+        set_status(&mut app.ui.retouch_ai, tl!(text::OPEN_IMAGE_TO_START).into(), true);
+        return;
+    };
+    let (amount, reference, selection_only) = {
+        let state = &app.ui.retouch_ai;
+        let amount = state.tool(id).map_or_else(|| default_amount(id), |tool| clamp_amount(tool.amount));
+        (amount, state.reference_path.trim().to_string(), state.selection_only)
+    };
+    let mut params = json!({
+        "tools": [{"id": id, "amount": amount}],
+        "sampleAllLayers": true,
+        "selectionOnly": selection_only,
+    });
+    if !reference.is_empty() {
+        params["referencePath"] = json!(reference);
+    }
+    run_retouch(app, params, document);
 }
 
 fn run_batch(app: &mut PhotocraftApp) {
@@ -1017,9 +1057,8 @@ fn group_header(ui: &mut egui::Ui, state: &mut RetouchAiState, key: &str, title:
     open
 }
 
-fn tool_row(ui: &mut egui::Ui, state: &mut RetouchAiState, id: &str) {
+fn tool_row(ui: &mut egui::Ui, state: &mut RetouchAiState, id: &str, tip: &str) {
     let t = Tokens::get(ui.ctx());
-    let hint = tool_hint(id);
     let Some(tool) = state.tools.iter_mut().find(|tool| tool.id == id) else { return };
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 19.0), Sense::click());
     let box_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 7.0, rect.center().y), vec2(13.0, 13.0));
@@ -1034,7 +1073,7 @@ fn tool_row(ui: &mut egui::Ui, state: &mut RetouchAiState, id: &str) {
     );
     ui.painter().text(egui::pos2(rect.right() - 2.0, rect.center().y), Align2::RIGHT_CENTER, format!("{:.0}%", tool.amount), theme::mono(10.5), t.text_faint);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, tool.enabled, label));
-    if response.on_hover_text(hint).clicked() {
+    if response.on_hover_text(tip).clicked() {
         tool.enabled = !tool.enabled;
     }
     let enabled = tool.enabled;
@@ -1042,7 +1081,7 @@ fn tool_row(ui: &mut egui::Ui, state: &mut RetouchAiState, id: &str) {
         ui.add_space(20.0);
         ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
         ui.add_enabled_ui(enabled, |ui| {
-            ui.add(egui::Slider::new(&mut tool.amount, 0.0..=100.0).show_value(false).suffix("%")).on_hover_text(hint);
+            ui.add(egui::Slider::new(&mut tool.amount, 0.0..=100.0).show_value(false).suffix("%")).on_hover_text(tip);
         });
     });
     ui.add_space(2.0);
@@ -1211,15 +1250,21 @@ fn folder_field(ui: &mut egui::Ui, label: &str, value: &mut String, pick: Action
     });
 }
 
-/// The panel's commands (`retouch.ai.*`): Window › Retouch AI and Edit › Keyboard Shortcuts.
-/// Each one shows the panel before running, so its result is visible whichever way it was called.
+/// The panel's commands (`retouch.ai.*` and `retouch.tool.*`): Window › Retouch AI and Edit ›
+/// Keyboard Shortcuts. Each one shows the panel before running, so its result is visible whichever
+/// way it was called.
 pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, String>> {
-    let action = match id {
-        "retouch.ai.analyze" => "analyze",
-        "retouch.ai.run" => "run",
-        "retouch.ai.skinSmooth" => "skinSmooth",
-        "retouch.ai.evenTone" => "evenTone",
-        _ => return None,
+    let tool = id.strip_prefix("retouch.tool.").filter(|tool| TOOLS.iter().any(|spec| spec.id == *tool));
+    let action = if tool.is_some() {
+        "tool"
+    } else {
+        match id {
+            "retouch.ai.analyze" => "analyze",
+            "retouch.ai.run" => "run",
+            "retouch.ai.skinSmooth" => "skinSmooth",
+            "retouch.ai.evenTone" => "evenTone",
+            _ => return None,
+        }
     };
     app.ui.panels.retouch_ai = true;
     // A shortcut can run before the panel has drawn once, when the state has no tool rows yet.
@@ -1229,9 +1274,17 @@ pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, St
         "run" => run_combo(app),
         "skinSmooth" => run_skin_smooth_brush(app),
         "evenTone" => run_even_tone_brush(app),
+        "tool" => {
+            if let Some(tool) = tool {
+                run_tool(app, tool);
+            }
+        }
         _ => return None,
     }
-    Some(Ok(json!({"action": action})))
+    Some(Ok(match tool {
+        Some(tool) => json!({"action": action, "tool": tool}),
+        None => json!({"action": action}),
+    }))
 }
 
 /// Window › Retouch AI. Draws nothing when the menu closed it; never needs a document.
@@ -1242,6 +1295,13 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     app.ui.retouch_ai.ensure_tools();
     sync_results_to_document(app);
     let has_document = app.session.active_index().is_some();
+    // Effective shortcuts (with the user's overrides) for every row and action button, read before
+    // the panel borrows its state mutably.
+    let tool_tips: Vec<String> = TOOLS.iter().map(|spec| tool_tip(app, spec.id)).collect();
+    let analyze_tip = crate::shortcuts::tip_label(app, text::ANALYZE, "retouch.ai.analyze");
+    let run_tip = crate::shortcuts::tip_label(app, text::RUN_SELECTED, "retouch.ai.run");
+    let smooth_tip = crate::shortcuts::tip_label(app, text::HINT_SKIN_SMOOTH, "retouch.ai.skinSmooth");
+    let even_tip = crate::shortcuts::tip_label(app, text::HINT_EVEN_TONE, "retouch.ai.evenTone");
     let finger = slider_gesture(ctx);
     let mut open = true;
     let mut actions = Vec::new();
@@ -1309,8 +1369,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 for (index, (key, _)) in TOOL_GROUPS.iter().enumerate() {
                     let title = group_title(index);
                     if group_header(ui, state, key, title) {
-                        for spec in TOOLS.iter().filter(|spec| spec.group == index) {
-                            tool_row(ui, state, spec.id);
+                        for (i, spec) in TOOLS.iter().enumerate().filter(|(_, spec)| spec.group == index) {
+                            tool_row(ui, state, spec.id, &tool_tips[i]);
                         }
                         if index == 0 {
                             let brush =
@@ -1318,13 +1378,13 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                             if brush.clicked() {
                                 actions.push(Action::SkinSmoothBrush);
                             }
-                            brush.on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
+                            brush.on_hover_text(&smooth_tip);
                             let even =
                                 ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::EVEN_TONE_BRUSH), ui.available_width())).inner;
                             if even.clicked() {
                                 actions.push(Action::EvenToneBrush);
                             }
-                            even.on_hover_text(tl!(text::HINT_EVEN_TONE));
+                            even.on_hover_text(&even_tip);
                             ui.horizontal(|ui| {
                                 ui.add_space(20.0);
                                 ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_STRENGTH)).size(11.0).color(t.text_dim));
@@ -1359,12 +1419,16 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(has_document, egui::Button::new(tl!(text::ANALYZE))).clicked() {
+                    let analyze_button = ui.add_enabled(has_document, egui::Button::new(tl!(text::ANALYZE)));
+                    if analyze_button.clicked() {
                         actions.push(Action::Analyze);
                     }
-                    if ui.add_enabled(has_document, egui::Button::new(tl!(text::RUN_SELECTED))).clicked() {
+                    analyze_button.on_hover_text(&analyze_tip);
+                    let run_button = ui.add_enabled(has_document, egui::Button::new(tl!(text::RUN_SELECTED)));
+                    if run_button.clicked() {
                         actions.push(Action::Run);
                     }
+                    run_button.on_hover_text(&run_tip);
                 });
                 let only = ui.add_enabled(has_document, egui::Checkbox::new(&mut state.selection_only, tl!(text::SELECTION_ONLY)));
                 only.on_hover_text(tl!(text::SELECTION_ONLY_HINT));
@@ -1568,6 +1632,113 @@ mod tests {
             prefs.shortcuts.insert("retouch.ai.analyze".into(), String::new());
         });
         assert!(!crate::shortcut_dispatch::bindings(&app).iter().any(|(id, _)| id == "retouch.ai.analyze"), "a cleared shortcut is unbound");
+    }
+
+    /// Every tool runs from its own command (Window › Retouch AI › Tools, and its shortcut): the
+    /// panel opens, the tool runs at its current amount, and the other checkboxes stay put.
+    #[test]
+    fn tool_commands_open_the_panel_and_run_only_their_tool() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        for spec in TOOLS {
+            app.ui.panels.retouch_ai = false;
+            app.ui.retouch_ai.status.clear();
+            app.ui.retouch_ai.status_error = false;
+            let id = tool_command(spec.id);
+            let value = crate::menus::invoke(&mut app, &ctx, &id, json!({})).expect("command");
+            assert_eq!(value["action"], "tool", "{id}");
+            assert_eq!(value["tool"], spec.id, "{id} names its tool");
+            assert!(app.ui.panels.retouch_ai, "{id} opens the panel");
+            assert_eq!(app.ui.retouch_ai.status, "Open an image to start", "{id} says why it can't run");
+            assert!(app.ui.retouch_ai.status_error, "{id} reports the missing document");
+        }
+        assert!(menu(&mut app, "retouch.tool.missing").is_none(), "unknown tools are left to the other handlers");
+
+        // With a document each tool reaches `retouchAI.run` and reports its analysis and layers.
+        app.run("file.new", json!({"width": 64, "height": 64})).expect("document");
+        let before: Vec<(String, bool, f32)> = app.ui.retouch_ai.tools.iter().map(|tool| (tool.id.clone(), tool.enabled, tool.amount)).collect();
+        for spec in TOOLS {
+            app.ui.retouch_ai.status.clear();
+            app.ui.retouch_ai.status_error = false;
+            let value = crate::menus::invoke(&mut app, &ctx, &tool_command(spec.id), json!({})).expect("command");
+            assert_eq!(value["tool"], spec.id);
+            assert!(app.ui.panels.retouch_ai, "{} keeps the panel open", spec.id);
+            let status = &app.ui.retouch_ai.status;
+            assert!(status.starts_with("Faces:"), "{} reports the analysis: {status}", spec.id);
+            assert!(status.contains("Created"), "{} reports the run: {status}", spec.id);
+            assert_eq!(app.ui.retouch_ai.result_document, Some(0), "{} stores its results for this document", spec.id);
+        }
+        let after: Vec<(String, bool, f32)> = app.ui.retouch_ai.tools.iter().map(|tool| (tool.id.clone(), tool.enabled, tool.amount)).collect();
+        assert_eq!(before, after, "running one tool directly leaves every checkbox and amount as it was");
+    }
+
+    /// The 14 tool commands are listed under Window › Retouch AI › Tools with their defaults, the
+    /// dispatch table binds every one, and none of the defaults collides with another command.
+    #[test]
+    fn tool_shortcuts_are_listed_bound_and_conflict_free() {
+        const KEYS: [&str; 14] = [
+            "Ctrl+Alt+1",
+            "Ctrl+Alt+2",
+            "Ctrl+Alt+3",
+            "Ctrl+Alt+4",
+            "Ctrl+Alt+5",
+            "Ctrl+Alt+6",
+            "Ctrl+Alt+7",
+            "Ctrl+Alt+8",
+            "Ctrl+Alt+9",
+            "Ctrl+Alt+0",
+            "Ctrl+Alt+-",
+            "Ctrl+Alt+=",
+            "Ctrl+Alt+[",
+            "Ctrl+Alt+]",
+        ];
+        let app = app();
+        let items = crate::prefs_ui::shortcut_items(&app);
+        let table = crate::shortcut_dispatch::bindings(&app);
+        let mut bound = std::collections::HashSet::new();
+        for (spec, key) in TOOLS.iter().zip(KEYS) {
+            let id = tool_command(spec.id);
+            assert_eq!(crate::shortcuts::default_shortcut(&id).as_deref(), Some(key), "{id} default");
+            let item = items.iter().find(|item| item.0 == id).unwrap_or_else(|| panic!("{id} is listed"));
+            assert_eq!(item.1, format!("Retouch AI: {}", tool_source(spec.id)), "{id} label");
+            assert_eq!(item.2, ["Window", "Retouch AI", "Tools"], "{id} sits under the Retouch AI tools");
+            assert_eq!(item.3.as_deref(), Some(key), "{id} shows its default");
+            let parsed = crate::shortcuts::parse(key).unwrap_or_else(|| panic!("{id}: unparsable {key}"));
+            assert!(bound.insert(parsed), "{id}: {key} is bound twice");
+            assert!(table.iter().any(|(bound, sc)| bound == &id && *sc == parsed), "{id} is bound to {key}");
+        }
+        // No default of the whole bindable set puts two commands on one of these keys.
+        let defaults: Vec<(&str, &str)> = photocraft_engine::prefs::bindable_items().filter_map(|item| item.3.map(|key| (item.0, key))).collect();
+        let conflicts = photocraft_engine::prefs::conflicts(defaults);
+        assert!(
+            !conflicts.iter().any(|(_, ids)| ids.iter().any(|id| id.starts_with("retouch.tool."))),
+            "tool shortcuts conflict with other defaults: {conflicts:?}"
+        );
+    }
+
+    /// Rebinding or clearing one tool's shortcut updates the dispatch table and the row's tooltip.
+    #[test]
+    fn rebinding_and_clearing_a_tool_shortcut_updates_bindings_and_tooltip() {
+        let mut app = app();
+        let id = tool_command("skinTone");
+        let hint = tool_hint("skinTone");
+        assert_eq!(tool_tip(&app, "skinTone"), format!("{hint}\n{}", crate::shortcuts::pretty("Ctrl+Alt+3")));
+        // A user override is picked up by dispatch and by the tooltip.
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert(id.clone(), "Alt+Shift+K".into());
+        });
+        let rebound = crate::shortcuts::parse("Alt+Shift+K").expect("rebound key");
+        assert!(crate::shortcut_dispatch::bindings(&app).iter().any(|(bound, sc)| bound == &id && *sc == rebound));
+        assert_eq!(tool_tip(&app, "skinTone"), format!("{hint}\n{}", crate::shortcuts::pretty("Alt+Shift+K")));
+        // The panel buttons read the effective shortcut too.
+        let analyze = crate::shortcuts::tip_label(&app, text::ANALYZE, "retouch.ai.analyze");
+        assert!(analyze.ends_with(&format!("({})", crate::shortcuts::pretty("Alt+A"))), "{analyze}");
+        // A removed binding leaves the bare hint and unbinds the command.
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert(id.clone(), String::new());
+        });
+        assert_eq!(tool_tip(&app, "skinTone"), hint);
+        assert!(!crate::shortcut_dispatch::bindings(&app).iter().any(|(bound, _)| bound == &id), "a cleared shortcut is unbound");
     }
 
     #[test]

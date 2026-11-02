@@ -725,7 +725,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         }
         i if i.starts_with("window.toggle.") => true,
         // The panel reports "Open an image to start" or its own failure without a document.
-        i if i.starts_with("retouch.ai.") => true,
+        i if i.starts_with("retouch.ai.") || i.starts_with("retouch.tool.") => true,
         "window.togglePanels" => true,
         // With one document open the key stays quiet, as in Photoshop, rather than reporting why.
         "window.nextDocument" | "window.previousDocument" => app.session.active().is_some(),
