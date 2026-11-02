@@ -14,6 +14,7 @@
 
 use std::path::Path;
 
+use photocraft_algo::face_mesh;
 use photocraft_algo::faces;
 use photocraft_algo::inpaint::{self, CompleteParams};
 use photocraft_algo::matting;
@@ -34,6 +35,7 @@ use crate::{EngineError, Result, Session};
 const RUN: &str = "retouchAI.run";
 const ANALYZE: &str = "retouchAI.analyze";
 const SKIN_SMOOTH: &str = "retouchAI.skinSmooth";
+const FACE_LANDMARKS: &str = "retouchAI.faceLandmarks";
 const FROM_FACE: &str = "layer.layerMask.fromFace";
 const DETECT_FACES: &str = "layer.layerMask.detectFaces";
 const MAX_TOOLS: usize = 14;
@@ -2088,6 +2090,87 @@ fn detect_faces_with(s: &mut Session, p: &Value, override_rects: Option<&[Rect]>
     Ok(json!({"faces": a.faces, "boxes": a.boxes}))
 }
 
+/// Which faces `retouchAI.faceLandmarks` reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LandmarkChoice {
+    Main,
+    All,
+    /// 1-based order in the detector's best-first order.
+    Index(usize),
+}
+
+impl LandmarkChoice {
+    fn parse(p: &Value) -> Result<Self> {
+        let bad_faces = || bad(FACE_LANDMARKS, "`faces` must be \"main\", \"all\" or a 1-based face number");
+        let one = |v: &Value| -> Option<usize> {
+            match v {
+                Value::Number(n) => n.as_u64().filter(|n| *n >= 1).map(|n| n as usize),
+                Value::String(s) => s.parse::<usize>().ok().filter(|n| *n >= 1),
+                _ => None,
+            }
+        };
+        match p.get("faces") {
+            None | Some(Value::Null) => Ok(Self::Main),
+            Some(Value::String(s)) if s == "main" => Ok(Self::Main),
+            Some(Value::String(s)) if s == "all" => Ok(Self::All),
+            Some(v @ (Value::Number(_) | Value::String(_))) => one(v).map(Self::Index).ok_or_else(bad_faces),
+            Some(_) => Err(bad_faces()),
+        }
+    }
+}
+
+fn has_pixel_layer_for_landmarks(s: &Session) -> std::result::Result<(), String> {
+    if !face_mesh::AVAILABLE {
+        return Err("face landmarks aren't available in the browser version of PhotoCraft; use the desktop app".into());
+    }
+    let d = s.active().ok_or("no document open")?;
+    let l = d.active_layer.and_then(|id| d.doc.layer(id)).ok_or("no active layer")?;
+    if matches!(l.content, LayerContent::Raster(_)) {
+        Ok(())
+    } else {
+        Err(format!("active layer is {} {} layer, not a pixel layer", l.content.article(), l.content.kind_name()))
+    }
+}
+
+/// Read-only QA query: the 468 MediaPipe landmarks of one face, every face, or a numbered face.
+fn face_landmarks_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let choice = LandmarkChoice::parse(p)?;
+    let layer_id = crate::commands::layer_param(s, p)?;
+    let doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
+    let layer = doc.layer(layer_id).ok_or(EngineError::NoLayer(layer_id))?;
+    if !matches!(layer.content, LayerContent::Raster(_)) {
+        return Err(bad(FACE_LANDMARKS, format!("layer \"{}\" is not a pixel layer", layer.name)));
+    }
+    let surface = layer.surface().ok_or_else(|| bad(FACE_LANDMARKS, format!("layer \"{}\" has no pixels", layer.name)))?;
+    let area = doc.bounds();
+    let (w, h) = (area.width() as usize, area.height() as usize);
+    let pixels = w.checked_mul(h).filter(|_| w > 0 && h > 0).ok_or_else(|| bad(FACE_LANDMARKS, "the document is empty"))?;
+    let mut px = vec![[0.0f32; 4]; pixels];
+    surface.read_rgba_into(area, &mut px);
+    let found = crate::face_cmds::detect(&px, w, h, crate::face_cmds::MIN_SCORE)?;
+    let selected: Vec<&faces::Face> = match choice {
+        LandmarkChoice::Main => found.first().into_iter().collect(),
+        LandmarkChoice::All => found.iter().collect(),
+        LandmarkChoice::Index(n) => found.get(n - 1).into_iter().collect(),
+    };
+    if let LandmarkChoice::Index(n) = choice
+        && selected.is_empty()
+    {
+        return Err(bad(FACE_LANDMARKS, format!("face {n} was not found; the detector found {}", found.len())));
+    }
+    let (ox, oy) = (area.x0 as f32, area.y0 as f32);
+    let mut out = Vec::with_capacity(selected.len());
+    for face in selected {
+        let points = face_mesh::landmarks(&px, w, h, face.rect).map_err(|e| EngineError::Other(format!("face landmarks failed: {e}")))?;
+        let points: Vec<Value> = points.into_iter().map(|[x, y, z]| json!([x + ox, y + oy, z])).collect();
+        out.push(json!({
+            "box": [face.rect[0] + ox, face.rect[1] + oy, face.rect[2], face.rect[3]],
+            "points": points,
+        }));
+    }
+    Ok(json!({ "faces": out, "count": out.len() }))
+}
+
 fn has_adjustment_layer(s: &Session) -> std::result::Result<(), String> {
     let d = s.active().ok_or("no document open")?;
     let layer = d.active_layer.and_then(|id| d.doc.layer(id)).ok_or("no active layer")?;
@@ -2128,6 +2211,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r##"{"layer":id? (default active layer),"sampleAllLayers":bool=true} → {"faces","skin","subject","eyes","mouth","regions":{"skin":[x,y,w,h],"subject":[x,y,w,h]},"suggestions":[tool ids]}"##,
             enabled: has_doc,
             run: analyze_cmd,
+            journal: false,
+        },
+        CommandSpec {
+            id: FACE_LANDMARKS,
+            label: "Retouch AI: Face Landmarks",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"layer":id|name? (pixel layer; default active layer),"faces":"main"|"all"|1..n="main"} → {"faces":[{"box":[x,y,w,h],"points":[[x,y,z],…]}],"count":n} (468 points per face in document pixels; z is the model's relative depth; read-only QA query)"##,
+            enabled: has_pixel_layer_for_landmarks,
+            run: face_landmarks_cmd,
             journal: false,
         },
         CommandSpec {
@@ -2922,6 +3015,23 @@ mod tests {
         for params in [json!({"layer": id.0, "coverage": "hair"}), json!({"layer": id.0, "faces": 0}), json!({"layer": id.0, "faces": -1})] {
             assert!(from_face_cmd_with(&mut s, &params, Some(&[Rect::from_xywh(70, 48, 52, 58)])).is_err(), "{params}");
         }
+    }
+
+    #[test]
+    fn face_landmarks_reports_no_faces_on_a_blank_image_and_validates_params() {
+        let mut s = plain_session();
+        assert!(s.is_enabled(FACE_LANDMARKS));
+        assert_eq!(s.execute(FACE_LANDMARKS, json!({})).unwrap(), json!({"faces": [], "count": 0}));
+        let label = s.active().unwrap().history.undo_label().map(str::to_string);
+        assert_eq!(s.execute(FACE_LANDMARKS, json!({"faces": "all"})).unwrap(), json!({"faces": [], "count": 0}));
+        assert_eq!(s.active().unwrap().history.undo_label().map(str::to_string), label, "landmarks are a query, not a history step");
+
+        let err = s.execute(FACE_LANDMARKS, json!({"faces": 1})).unwrap_err().to_string();
+        assert!(err.contains("face 1 was not found"), "{err}");
+        for params in [json!({"faces": "none"}), json!({"faces": 0}), json!({"faces": -1}), json!({"faces": [1]})] {
+            assert!(s.execute(FACE_LANDMARKS, params.clone()).is_err(), "{params}");
+        }
+        assert!(s.execute(FACE_LANDMARKS, json!({"layer": 999})).is_err(), "an unknown layer is refused");
     }
 
     #[test]

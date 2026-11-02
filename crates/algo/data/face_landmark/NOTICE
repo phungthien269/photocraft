@@ -1,0 +1,14 @@
+MediaPipe Face Landmark model
+=============================
+
+face_landmark_detector.onnx and face_landmark_detector.data are the MediaPipe
+Face Landmark Detector exported to ONNX (Apache-2.0), as distributed with the
+Qualcomm AI Hub model assets and metadata.json included here.
+
+The model is used by crates/algo/src/face_mesh.rs to predict 468 face landmarks
+for Face Reshape. It is not modified. The original ONNX graph references its
+weights through the external-data file named face_landmark_detector.data; that
+exact filename is kept.
+
+License: Apache License, Version 2.0. See LICENSE-APACHE in this directory.
+The upstream model card and metadata are retained in metadata.json.
