@@ -4026,3 +4026,14 @@ curves	Smooth	Vloeiend maken
 	Retouch AI: Color Match	Retouch AI: Kleur afstemmen
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Gezicht automatisch selecteren
+	Basic Color: Scan Faces	Basic Color: Gezichten scannen
+	Basic Color: Show/Hide Selection	Basic Color: Selectie tonen/verbergen
+	Color Presets: Save Current Look	Kleurvoorinstellingen: Huidige uiterlijk opslaan
+	Color Presets: Apply Selected Preset	Kleurvoorinstellingen: Geselecteerde voorinstelling toepassen
+	Color Presets: Run Batch	Kleurvoorinstellingen: Batch uitvoeren
+	Select a Basic Color layer first.	Selecteer eerst een Basic Color-laag.
+	Selection overlay shown.	Selectie-overlay getoond.
+	Selection overlay hidden.	Selectie-overlay verborgen.

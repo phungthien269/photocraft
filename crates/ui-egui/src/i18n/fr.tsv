@@ -3274,3 +3274,14 @@ curves	Smooth	Lisser
 	Retouch AI: Color Match	Retouch AI: Correspondance des couleurs
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color : Sélection automatique du visage
+	Basic Color: Scan Faces	Basic Color : Analyser les visages
+	Basic Color: Show/Hide Selection	Basic Color : Afficher/masquer la sélection
+	Color Presets: Save Current Look	Préréglages de couleur : Enregistrer l'aspect actuel
+	Color Presets: Apply Selected Preset	Préréglages de couleur : Appliquer le préréglage sélectionné
+	Color Presets: Run Batch	Préréglages de couleur : Exécuter le lot
+	Select a Basic Color layer first.	Sélectionnez d'abord un calque Basic Color.
+	Selection overlay shown.	Superposition de sélection affichée.
+	Selection overlay hidden.	Superposition de sélection masquée.

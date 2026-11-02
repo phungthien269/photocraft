@@ -3966,3 +3966,14 @@ curves	Smooth	Εξομάλυνση
 	Retouch AI: Color Match	Retouch AI: Αντιστοίχιση χρώματος
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Αυτόματη επιλογή προσώπου
+	Basic Color: Scan Faces	Basic Color: Σάρωση προσώπων
+	Basic Color: Show/Hide Selection	Basic Color: Εμφάνιση/απόκρυψη επιλογής
+	Color Presets: Save Current Look	Προεπιλογές χρώματος: Αποθήκευση τρέχουσας εμφάνισης
+	Color Presets: Apply Selected Preset	Προεπιλογές χρώματος: Εφαρμογή επιλεγμένης προεπιλογής
+	Color Presets: Run Batch	Προεπιλογές χρώματος: Εκτέλεση παρτίδας
+	Select a Basic Color layer first.	Επιλέξτε πρώτα ένα επίπεδο Basic Color.
+	Selection overlay shown.	Η επικάλυψη επιλογής εμφανίστηκε.
+	Selection overlay hidden.	Η επικάλυψη επιλογής αποκρύφτηκε.

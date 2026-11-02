@@ -79,8 +79,16 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("retouch.tool.dustClean", "Retouch AI: Dust Clean", &["Window", "Retouch AI", "Tools"], Some("Ctrl+Alt+=")),
     ("retouch.tool.backgroundClean", "Retouch AI: Background Clean", &["Window", "Retouch AI", "Tools"], Some("Ctrl+Alt+[")),
     ("retouch.tool.colorMatch", "Retouch AI: Color Match", &["Window", "Retouch AI", "Tools"], Some("Ctrl+Alt+]")),
-    ("window.toggle.basicColor", "Basic Color", &["Window"], None),
-    ("window.toggle.colorPresets", "Color Presets", &["Window"], None),
+    // Basic Color and Color Presets panel actions, bindable from Edit › Keyboard Shortcuts as
+    // well as the panels themselves.
+    ("basicColor.autoFace", "Basic Color: Auto-select Face", &["Window", "Basic Color"], Some("Alt+Shift+A")),
+    ("basicColor.scanFaces", "Basic Color: Scan Faces", &["Window", "Basic Color"], Some("Alt+Shift+F")),
+    ("basicColor.toggleSelection", "Basic Color: Show/Hide Selection", &["Window", "Basic Color"], Some("Alt+Shift+S")),
+    ("colorPresets.save", "Color Presets: Save Current Look", &["Window", "Color Presets"], Some("Alt+Shift+V")),
+    ("colorPresets.apply", "Color Presets: Apply Selected Preset", &["Window", "Color Presets"], Some("Alt+Shift+Enter")),
+    ("colorPresets.runBatch", "Color Presets: Run Batch", &["Window", "Color Presets"], Some("Alt+Shift+R")),
+    ("window.toggle.basicColor", "Basic Color", &["Window"], Some("Alt+B")),
+    ("window.toggle.colorPresets", "Color Presets", &["Window"], Some("Alt+P")),
     ("window.toggle.navigator", "Navigator", &["Window"], None),
     ("window.toggle.toolbar", "Tools", &["Window"], None),
     // Photoshop's Tab and ⇧Tab: all panels (Tools, options bar and the dock), or only the dock.
@@ -214,5 +222,25 @@ mod tests {
         }
         assert_eq!(tool_default("tools.select.move"), Some(Some("V")));
         assert_eq!(tool_default("edit.copy"), None);
+    }
+
+    #[test]
+    fn panel_action_defaults_are_present() {
+        let find = |id: &str| SHELL_COMMANDS.iter().find(|command| command.0 == id).unwrap_or_else(|| panic!("{id} is listed"));
+        for (id, label, path, key) in [
+            ("window.toggle.basicColor", "Basic Color", &["Window"][..], "Alt+B"),
+            ("window.toggle.colorPresets", "Color Presets", &["Window"][..], "Alt+P"),
+            ("basicColor.autoFace", "Basic Color: Auto-select Face", &["Window", "Basic Color"][..], "Alt+Shift+A"),
+            ("basicColor.scanFaces", "Basic Color: Scan Faces", &["Window", "Basic Color"][..], "Alt+Shift+F"),
+            ("basicColor.toggleSelection", "Basic Color: Show/Hide Selection", &["Window", "Basic Color"][..], "Alt+Shift+S"),
+            ("colorPresets.save", "Color Presets: Save Current Look", &["Window", "Color Presets"][..], "Alt+Shift+V"),
+            ("colorPresets.apply", "Color Presets: Apply Selected Preset", &["Window", "Color Presets"][..], "Alt+Shift+Enter"),
+            ("colorPresets.runBatch", "Color Presets: Run Batch", &["Window", "Color Presets"][..], "Alt+Shift+R"),
+        ] {
+            let command = find(id);
+            assert_eq!(command.1, label, "{id} label");
+            assert_eq!(command.2, path, "{id} menu path");
+            assert_eq!(command.3, Some(key), "{id} default");
+        }
     }
 }

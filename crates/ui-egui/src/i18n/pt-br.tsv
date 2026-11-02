@@ -4056,3 +4056,14 @@ layerLabel	No Color	Sem cor
 	Retouch AI: Color Match	Retouch AI: Correspondência de cor
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Selecionar rosto automaticamente
+	Basic Color: Scan Faces	Basic Color: Escanear rostos
+	Basic Color: Show/Hide Selection	Basic Color: Mostrar/ocultar seleção
+	Color Presets: Save Current Look	Predefinições de cor: Salvar aparência atual
+	Color Presets: Apply Selected Preset	Predefinições de cor: Aplicar predefinição selecionada
+	Color Presets: Run Batch	Predefinições de cor: Executar lote
+	Select a Basic Color layer first.	Selecione primeiro uma camada Basic Color.
+	Selection overlay shown.	Sobreposição de seleção exibida.
+	Selection overlay hidden.	Sobreposição de seleção oculta.

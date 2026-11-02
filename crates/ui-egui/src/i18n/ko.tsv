@@ -3448,3 +3448,14 @@ curves	Smooth	매끄럽게
 	Retouch AI: Color Match	Retouch AI: 색상 일치
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: 얼굴 자동 선택
+	Basic Color: Scan Faces	Basic Color: 얼굴 스캔
+	Basic Color: Show/Hide Selection	Basic Color: 선택 영역 표시/숨기기
+	Color Presets: Save Current Look	색상 사전 설정: 현재 모양 저장
+	Color Presets: Apply Selected Preset	색상 사전 설정: 선택한 사전 설정 적용
+	Color Presets: Run Batch	색상 사전 설정: 일괄 처리 실행
+	Select a Basic Color layer first.	먼저 Basic Color 레이어를 선택하십시오.
+	Selection overlay shown.	선택 영역 오버레이가 표시되었습니다.
+	Selection overlay hidden.	선택 영역 오버레이가 숨겨졌습니다.

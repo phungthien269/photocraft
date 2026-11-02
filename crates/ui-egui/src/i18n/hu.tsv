@@ -4185,3 +4185,14 @@ cameraRaw	Yellow	Sárga
 	Retouch AI: Color Match	Retouch AI: Színegyeztetés
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Arc automatikus kijelölése
+	Basic Color: Scan Faces	Basic Color: Arcok beolvasása
+	Basic Color: Show/Hide Selection	Basic Color: Kijelölés megjelenítése/elrejtése
+	Color Presets: Save Current Look	Színelőbeállítások: Jelenlegi megjelenés mentése
+	Color Presets: Apply Selected Preset	Színelőbeállítások: Kijelölt előbeállítás alkalmazása
+	Color Presets: Run Batch	Színelőbeállítások: Köteg futtatása
+	Select a Basic Color layer first.	Először jelöljön ki egy Basic Color réteget.
+	Selection overlay shown.	A kijelölés átfedése megjelenítve.
+	Selection overlay hidden.	A kijelölés átfedése elrejtve.

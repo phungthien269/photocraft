@@ -3240,3 +3240,14 @@ curves	Smooth	Сгладить
 	Retouch AI: Color Match	Retouch AI: Совпадение цветов
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Автовыбор лица
+	Basic Color: Scan Faces	Basic Color: Поиск лиц
+	Basic Color: Show/Hide Selection	Basic Color: Показать/скрыть выделение
+	Color Presets: Save Current Look	Наборы цветов: Сохранить текущий вид
+	Color Presets: Apply Selected Preset	Наборы цветов: Применить выбранный набор
+	Color Presets: Run Batch	Наборы цветов: Запустить пакетную обработку
+	Select a Basic Color layer first.	Сначала выберите слой Basic Color.
+	Selection overlay shown.	Наложение выделения показано.
+	Selection overlay hidden.	Наложение выделения скрыто.

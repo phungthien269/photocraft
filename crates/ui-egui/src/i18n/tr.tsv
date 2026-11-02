@@ -3996,3 +3996,14 @@ cameraData	Lens	Lens
 	Retouch AI: Color Match	Retouch AI: Renk Eşleştirme
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Yüzü Otomatik Seç
+	Basic Color: Scan Faces	Basic Color: Yüzleri Tara
+	Basic Color: Show/Hide Selection	Basic Color: Seçimi Göster/Gizle
+	Color Presets: Save Current Look	Renk ön ayarları: Geçerli Görünümü Kaydet
+	Color Presets: Apply Selected Preset	Renk ön ayarları: Seçili Ön Ayarı Uygula
+	Color Presets: Run Batch	Renk ön ayarları: Toplu İşlemi Çalıştır
+	Select a Basic Color layer first.	Önce bir Basic Color katmanı seçin.
+	Selection overlay shown.	Seçim kaplaması gösterildi.
+	Selection overlay hidden.	Seçim kaplaması gizlendi.

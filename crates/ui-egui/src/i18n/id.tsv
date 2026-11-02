@@ -3261,3 +3261,14 @@ curves	Smooth	Haluskan
 	Retouch AI: Color Match	Retouch AI: Cocokkan Warna
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Pilih Wajah Otomatis
+	Basic Color: Scan Faces	Basic Color: Pindai Wajah
+	Basic Color: Show/Hide Selection	Basic Color: Tampilkan/Sembunyikan Pilihan
+	Color Presets: Save Current Look	Preset Warna: Simpan Tampilan Saat Ini
+	Color Presets: Apply Selected Preset	Preset Warna: Terapkan Preset Terpilih
+	Color Presets: Run Batch	Preset Warna: Jalankan Batch
+	Select a Basic Color layer first.	Pilih layer Basic Color terlebih dahulu.
+	Selection overlay shown.	Hamparan pilihan ditampilkan.
+	Selection overlay hidden.	Hamparan pilihan disembunyikan.

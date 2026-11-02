@@ -3943,3 +3943,14 @@ curves	Smooth	スムーズ
 	Retouch AI: Color Match	Retouch AI: カラーマッチ
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: 顔を自動選択
+	Basic Color: Scan Faces	Basic Color: 顔をスキャン
+	Basic Color: Show/Hide Selection	Basic Color: 選択範囲の表示/非表示
+	Color Presets: Save Current Look	カラープリセット: 現在のルックを保存
+	Color Presets: Apply Selected Preset	カラープリセット: 選択したプリセットを適用
+	Color Presets: Run Batch	カラープリセット: バッチを実行
+	Select a Basic Color layer first.	先に Basic Color レイヤーを選択してください。
+	Selection overlay shown.	選択範囲のオーバーレイを表示しました。
+	Selection overlay hidden.	選択範囲のオーバーレイを非表示にしました。

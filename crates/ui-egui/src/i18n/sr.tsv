@@ -4339,3 +4339,14 @@ shape	Appearance	Izgled
 	Retouch AI: Color Match	Retouch AI: Usklađivanje boja
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Automatski izaberi lice
+	Basic Color: Scan Faces	Basic Color: Skeniraj lica
+	Basic Color: Show/Hide Selection	Basic Color: Prikaži/sakrij izbor
+	Color Presets: Save Current Look	Šabloni boja: Sačuvaj trenutni izgled
+	Color Presets: Apply Selected Preset	Šabloni boja: Primeni izabrani šablon
+	Color Presets: Run Batch	Šabloni boja: Pokreni seriju
+	Select a Basic Color layer first.	Prvo izaberite sloj Basic Color.
+	Selection overlay shown.	Overlaj izbora je prikazan.
+	Selection overlay hidden.	Overlaj izbora je sakriven.

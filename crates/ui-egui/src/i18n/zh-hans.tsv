@@ -2890,3 +2890,14 @@ curves	Smooth	平滑
 	Retouch AI: Color Match	Retouch AI: 颜色匹配
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color：自动选择面部
+	Basic Color: Scan Faces	Basic Color：扫描面部
+	Basic Color: Show/Hide Selection	Basic Color：显示/隐藏选区
+	Color Presets: Save Current Look	颜色预设：保存当前外观
+	Color Presets: Apply Selected Preset	颜色预设：应用所选预设
+	Color Presets: Run Batch	颜色预设：运行批处理
+	Select a Basic Color layer first.	请先选择一个 Basic Color 图层。
+	Selection overlay shown.	已显示选区叠加层。
+	Selection overlay hidden.	已隐藏选区叠加层。

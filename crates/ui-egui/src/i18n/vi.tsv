@@ -3912,3 +3912,14 @@ curves	Smooth	Làm mượt
 	{n} layers	{n} lớp
 	1 layer	1 lớp
 	Presets…	Preset…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Chỉnh màu: Tự chọn vùng mặt
+	Basic Color: Scan Faces	Chỉnh màu: Quét khuôn mặt
+	Basic Color: Show/Hide Selection	Chỉnh màu: Hiện/Ẩn vùng chọn
+	Color Presets: Save Current Look	Preset màu: Lưu look hiện tại
+	Color Presets: Apply Selected Preset	Preset màu: Áp dụng preset đã chọn
+	Color Presets: Run Batch	Preset màu: Chạy hàng loạt
+	Select a Basic Color layer first.	Hãy chọn một lớp Chỉnh màu trước.
+	Selection overlay shown.	Đã hiện lớp phủ vùng chọn.
+	Selection overlay hidden.	Đã ẩn lớp phủ vùng chọn.

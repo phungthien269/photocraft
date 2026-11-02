@@ -3874,3 +3874,14 @@ navigator	Zoom	Zvětšení
 	Retouch AI: Color Match	Retouch AI: Sladění barev
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Automaticky vybrat obličej
+	Basic Color: Scan Faces	Basic Color: Skenovat obličeje
+	Basic Color: Show/Hide Selection	Basic Color: Zobrazit/skrýt výběr
+	Color Presets: Save Current Look	Přednastavení barev: Uložit aktuální vzhled
+	Color Presets: Apply Selected Preset	Přednastavení barev: Použít vybrané přednastavení
+	Color Presets: Run Batch	Přednastavení barev: Spustit dávku
+	Select a Basic Color layer first.	Nejprve vyberte vrstvu Basic Color.
+	Selection overlay shown.	Překryv výběru je zobrazen.
+	Selection overlay hidden.	Překryv výběru je skryt.

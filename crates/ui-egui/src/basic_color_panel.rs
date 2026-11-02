@@ -15,7 +15,7 @@ use egui::{Align2, CornerRadius, Sense, Stroke, vec2};
 use photocraft_doc::{Adjustment, LayerContent, LayerId};
 use photocraft_engine::jobs::{JobId, JobInfo, Started};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::theme::{self, Tokens};
 use crate::{PhotocraftApp, icons, widgets};
@@ -96,6 +96,9 @@ pub(crate) mod text {
     pub const NO_FACE: &str = "No face found. Paint the region manually.";
     pub const FACE_FAILED: &str = "Face selection failed: {error}";
     pub const HINT: &str = "Paint white to reveal, black to hide. Sliders affect only the painted region.";
+    pub const NO_BASIC_COLOR: &str = "Select a Basic Color layer first.";
+    pub const SELECTION_SHOWN: &str = "Selection overlay shown.";
+    pub const SELECTION_HIDDEN: &str = "Selection overlay hidden.";
 
     // Editor section labels (shared with `adjust_editors`).
     pub const WHITE_BALANCE: &str = "White Balance";
@@ -149,6 +152,9 @@ pub(crate) mod text {
         NO_FACE,
         FACE_FAILED,
         HINT,
+        NO_BASIC_COLOR,
+        SELECTION_SHOWN,
+        SELECTION_HIDDEN,
         WHITE_BALANCE,
         TONE,
         PRESENCE,
@@ -328,6 +334,22 @@ fn paint_setup(app: &mut PhotocraftApp) {
 /// no history step, no pixels, no export. `mode` is `overlay` or `off`.
 fn set_selection_view(app: &mut PhotocraftApp, layer: LayerId, mode: &str) -> Result<(), String> {
     app.run("view.layerMask", json!({"layer": layer.0, "mode": mode})).map(|_| ())
+}
+
+/// The effective shortcut hints of the three mask/face buttons, read before the panel borrows its
+/// state mutably. A cleared binding leaves the plain label.
+struct FaceTips {
+    auto_face: String,
+    scan_faces: String,
+    selection: String,
+}
+
+fn face_tips(app: &PhotocraftApp, overlay: bool) -> FaceTips {
+    FaceTips {
+        auto_face: crate::shortcuts::tip_label(app, text::AUTO_FACE, "basicColor.autoFace"),
+        scan_faces: crate::shortcuts::tip_label(app, text::SCAN_FACES, "basicColor.scanFaces"),
+        selection: crate::shortcuts::tip_label(app, if overlay { text::HIDE_SELECTION } else { text::SHOW_SELECTION }, "basicColor.toggleSelection"),
+    }
 }
 
 fn show_selection(app: &mut PhotocraftApp, layer: LayerId) {
@@ -676,6 +698,7 @@ fn face_row(
     coverage: &mut FaceCoverage,
     job: Option<&JobInfo>,
     with_apply: bool,
+    tips: &FaceTips,
     actions: &mut Vec<Action>,
 ) {
     let t = Tokens::get(ui.ctx());
@@ -695,10 +718,10 @@ fn face_row(
         if with_apply && widgets::secondary_button(ui, tl!(text::APPLY_WHOLE), 0.0).clicked() {
             actions.push(Action::ApplyWhole { layer: info.id });
         }
-        if widgets::secondary_button(ui, tl!(text::AUTO_FACE), 0.0).clicked() {
+        if widgets::secondary_button(ui, tl!(text::AUTO_FACE), 0.0).on_hover_text(tips.auto_face.as_str()).clicked() {
             actions.push(Action::AutoFace { layer: info.id, choice: *choice, coverage: *coverage });
         }
-        if widgets::secondary_button(ui, tl!(text::SCAN_FACES), 0.0).clicked() {
+        if widgets::secondary_button(ui, tl!(text::SCAN_FACES), 0.0).on_hover_text(tips.scan_faces.as_str()).clicked() {
             actions.push(Action::ScanFaces { layer: info.id });
         }
     });
@@ -784,6 +807,7 @@ fn mask_controls(
     coverage: &mut FaceCoverage,
     boxes_visible: &mut bool,
     job: Option<&JobInfo>,
+    tips: &FaceTips,
     actions: &mut Vec<Action>,
 ) {
     let t = Tokens::get(ui.ctx());
@@ -798,7 +822,7 @@ fn mask_controls(
     if !info.has_mask {
         // Vector mask only, or none: painting needs a pixel mask, so the paint controls wait.
         ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_PIXEL_MASK)).size(11.0).color(t.text_faint)).wrap());
-        face_row(ui, info, choice, face_choices, selected, coverage, job, true, actions);
+        face_row(ui, info, choice, face_choices, selected, coverage, job, true, tips, actions);
         return;
     }
     ui.horizontal_wrapped(|ui| {
@@ -814,11 +838,11 @@ fn mask_controls(
             actions.push(Action::ApplyWhole { layer: info.id });
         }
         let mask_label = if info.overlay { tl!(text::HIDE_SELECTION) } else { tl!(text::SHOW_SELECTION) };
-        if ui.selectable_label(info.overlay, mask_label).clicked() {
+        if ui.selectable_label(info.overlay, mask_label).on_hover_text(tips.selection.as_str()).clicked() {
             actions.push(Action::ToggleMask { layer: info.id });
         }
     });
-    face_row(ui, info, choice, face_choices, selected, coverage, job, false, actions);
+    face_row(ui, info, choice, face_choices, selected, coverage, job, false, tips, actions);
     let hint = if info.overlay { tl!(text::SELECTION_HINT) } else { tl!(text::HINT) };
     ui.add(egui::Label::new(egui::RichText::new(hint).size(10.5).color(t.text_faint)).wrap());
 }
@@ -884,6 +908,45 @@ pub(crate) fn draw_face_boxes(app: &mut PhotocraftApp, ui: &egui::Ui, painter: &
     }
 }
 
+/// The panel's commands (`basicColor.*`): Window › Basic Color and Edit › Keyboard Shortcuts.
+/// Each one shows the panel first, so its result is visible whichever way it was called.
+pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, String>> {
+    let action = match id {
+        "basicColor.autoFace" => "autoFace",
+        "basicColor.scanFaces" => "scanFaces",
+        "basicColor.toggleSelection" => "toggleSelection",
+        _ => return None,
+    };
+    app.ui.panels.basic_color = true;
+    let Some(info) = active_basic_color(app) else {
+        // The panel's own banner says the same thing; the status line makes the shortcut's result
+        // visible even when the panel was closed a moment ago.
+        let message = if app.session.active_index().is_some() { tl!(text::NO_BASIC_COLOR).to_string() } else { tl!(text::OPEN_IMAGE_TO_START).to_string() };
+        set_status(&mut app.ui.basic_color, message, true);
+        return Some(Ok(json!({"action": action})));
+    };
+    match action {
+        "autoFace" => {
+            let choice = app.ui.basic_color.face_choice;
+            let coverage = app.ui.basic_color.face_coverage;
+            start_face_job(app, info.id, FaceJobKind::Apply, choice, coverage);
+        }
+        "scanFaces" => start_face_job(app, info.id, FaceJobKind::Scan, 0, FaceCoverage::FaceNeck),
+        "toggleSelection" => {
+            let mode = if info.overlay { "off" } else { "overlay" };
+            match set_selection_view(app, info.id, mode) {
+                Ok(()) => {
+                    let message = if info.overlay { tl!(text::SELECTION_HIDDEN) } else { tl!(text::SELECTION_SHOWN) };
+                    set_status(&mut app.ui.basic_color, message.to_string(), false);
+                }
+                Err(error) => failed(app, text::MASK_FAILED, &error),
+            }
+        }
+        _ => return None,
+    }
+    Some(Ok(json!({"action": action})))
+}
+
 /// Window › Basic Color. Draws nothing when the menu closed it; never needs a document.
 pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.panels.basic_color {
@@ -892,6 +955,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     poll_face_job(app);
     let has_document = app.session.active_index().is_some();
     let active = active_basic_color(app);
+    let tips = face_tips(app, active.as_ref().is_some_and(|info| info.overlay));
     let doc_key = app.session.active().map(face_selection_key);
     let doc_id = app.session.active().map(|st| st.doc.id.0);
     if app.ui.basic_color.face_doc_key != doc_key && !app.ui.basic_color.face_busy {
@@ -1011,6 +1075,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                             &mut face_coverage,
                             &mut face_boxes_visible,
                             face_job.as_ref(),
+                            &tips,
                             &mut actions,
                         );
                         ui.add_space(4.0);
@@ -1426,6 +1491,132 @@ mod tests {
         assert!(!app.ui.panels.basic_color);
         crate::menus::invoke(&mut app, &ctx, "window.panel.basicColor", json!({})).expect("panel alias");
         assert!(app.ui.panels.basic_color);
+    }
+
+    /// The three panel actions work as commands (Window › Basic Color and Edit › Keyboard
+    /// Shortcuts): each shows the panel and reports its result, with or without a document.
+    #[test]
+    fn menu_commands_open_the_panel_and_run_their_action() {
+        const ACTIONS: [(&str, &str); 3] =
+            [("basicColor.autoFace", "autoFace"), ("basicColor.scanFaces", "scanFaces"), ("basicColor.toggleSelection", "toggleSelection")];
+        let ctx = egui::Context::default();
+        let mut app = app();
+        for (id, action) in ACTIONS {
+            app.ui.panels.basic_color = false;
+            app.ui.basic_color.status.clear();
+            app.ui.basic_color.status_error = false;
+            let value = crate::menus::invoke(&mut app, &ctx, id, json!({})).expect("command");
+            assert_eq!(value["action"], action, "{id} returns its action");
+            assert!(app.ui.panels.basic_color, "{id} opens the panel");
+            assert_eq!(app.ui.basic_color.status, text::OPEN_IMAGE_TO_START, "{id} says why it can't run");
+        }
+        assert!(menu(&mut app, "basicColor.missing").is_none(), "unknown ids are left to the other handlers");
+
+        // A document without a Basic Color layer gets a clear status, not silence.
+        app.run("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("document");
+        for (id, action) in ACTIONS {
+            app.ui.basic_color.status.clear();
+            let value = crate::menus::invoke(&mut app, &ctx, id, json!({})).expect("command");
+            assert_eq!(value["action"], action);
+            assert_eq!(app.ui.basic_color.status, text::NO_BASIC_COLOR, "{id} names the missing layer");
+            assert!(app.ui.basic_color.status_error, "{id} marks the missing layer");
+        }
+
+        // With a Basic Color layer the face commands start their jobs and the overlay toggles.
+        app.run("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        let layer = app.session.active().and_then(|st| st.active_layer).expect("active layer");
+        app.run("layer.layerMask.revealAll", json!({"layer": layer.0})).expect("pixel mask");
+
+        app.ui.basic_color.face_choice = 1;
+        app.ui.basic_color.face_coverage = FaceCoverage::Face;
+        let value = crate::menus::invoke(&mut app, &ctx, "basicColor.autoFace", json!({})).expect("auto face");
+        assert_eq!(value["action"], "autoFace");
+        assert!(app.ui.basic_color.face_busy);
+        assert_eq!(app.ui.basic_color.face_job_kind, FaceJobKind::Apply);
+        assert!(
+            app.ui.basic_color.status.contains("Detecting") || app.ui.basic_color.status.contains("Đang nhận diện"),
+            "the panel says it is detecting a face: {}",
+            app.ui.basic_color.status
+        );
+        if let Some(job) = app.ui.basic_color.face_job {
+            app.session.cancel_job(job);
+        }
+        clear_face_job(&mut app);
+
+        let value = crate::menus::invoke(&mut app, &ctx, "basicColor.scanFaces", json!({})).expect("scan faces");
+        assert_eq!(value["action"], "scanFaces");
+        assert!(app.ui.basic_color.face_busy);
+        assert_eq!(app.ui.basic_color.face_job_kind, FaceJobKind::Scan);
+        if let Some(job) = app.ui.basic_color.face_job {
+            app.session.cancel_job(job);
+        }
+        clear_face_job(&mut app);
+
+        let value = crate::menus::invoke(&mut app, &ctx, "basicColor.toggleSelection", json!({})).expect("show selection");
+        assert_eq!(value["action"], "toggleSelection");
+        let st = app.session.active().expect("document");
+        assert_eq!(photocraft_engine::mask_view_cmds::current(st).map(|view| view.mode), Some(photocraft_engine::mask_view_cmds::MaskViewMode::Overlay));
+        assert_eq!(app.ui.basic_color.status, text::SELECTION_SHOWN);
+        crate::menus::invoke(&mut app, &ctx, "basicColor.toggleSelection", json!({})).expect("hide selection");
+        let st = app.session.active().expect("document");
+        assert_eq!(photocraft_engine::mask_view_cmds::current(st), None);
+        assert_eq!(app.ui.basic_color.status, text::SELECTION_HIDDEN);
+    }
+
+    /// The new commands are listed by Edit › Keyboard Shortcuts with their defaults, the
+    /// dispatch table binds those keys, and rebinding or clearing reaches both.
+    #[test]
+    fn shortcut_settings_list_the_basic_color_actions_and_their_defaults() {
+        let mut app = app();
+        let items = crate::prefs_ui::shortcut_items(&app);
+        let table = crate::shortcut_dispatch::bindings(&app);
+        let specs: [(&str, &str, &[&str]); 4] = [
+            ("basicColor.autoFace", "Alt+Shift+A", &["Window", "Basic Color"]),
+            ("basicColor.scanFaces", "Alt+Shift+F", &["Window", "Basic Color"]),
+            ("basicColor.toggleSelection", "Alt+Shift+S", &["Window", "Basic Color"]),
+            ("window.toggle.basicColor", "Alt+B", &["Window"]),
+        ];
+        for (id, key, path) in specs {
+            assert_eq!(crate::shortcuts::default_shortcut(id).as_deref(), Some(key), "{id} default");
+            let item = items.iter().find(|item| item.0 == id).unwrap_or_else(|| panic!("{id} is listed"));
+            assert_eq!(item.2, path.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>(), "{id} groups under its panel");
+            assert_eq!(item.3.as_deref(), Some(key), "{id} shows its default");
+            let parsed = crate::shortcuts::parse(key).unwrap_or_else(|| panic!("{id}: unparsable {key}"));
+            assert!(table.iter().any(|(bound, sc)| bound == id && *sc == parsed), "{id} is bound to {key}");
+        }
+        let all = crate::menus::UI_COMMANDS
+            .iter()
+            .filter_map(|(id, _, _, sc)| sc.map(|s| (*id, s)))
+            .chain(photocraft_engine::command_specs().iter().filter_map(|c| c.shortcut.map(|s| (c.id, s))));
+        let conflicts = photocraft_engine::prefs::conflicts(all);
+        assert!(conflicts.is_empty(), "the defaults conflict with nothing: {conflicts:?}");
+
+        // The dialog's overrides are the only store: rebinding and clearing reach dispatch.
+        let rebound = crate::shortcuts::parse("Alt+Shift+Z").expect("rebound key");
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("basicColor.autoFace".into(), "Alt+Shift+Z".into());
+        });
+        assert!(crate::shortcut_dispatch::bindings(&app).iter().any(|(id, sc)| id == "basicColor.autoFace" && *sc == rebound));
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("basicColor.autoFace".into(), String::new());
+        });
+        assert!(!crate::shortcut_dispatch::bindings(&app).iter().any(|(id, _)| id == "basicColor.autoFace"), "a cleared shortcut is unbound");
+    }
+
+    /// The button tooltips read the effective binding: an override replaces the default and a
+    /// cleared binding leaves the plain label.
+    #[test]
+    fn tooltips_follow_shortcut_overrides() {
+        let mut app = app();
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("basicColor.autoFace".into(), "Alt+Shift+Z".into());
+            prefs.shortcuts.insert("basicColor.scanFaces".into(), String::new());
+        });
+        let tips = face_tips(&app, false);
+        assert_eq!(tips.auto_face, format!("Auto-select face  ({})", crate::shortcuts::pretty("Alt+Shift+Z")));
+        assert_eq!(tips.scan_faces, text::SCAN_FACES, "a cleared binding leaves the plain label");
+        assert_eq!(tips.selection, format!("Show selection  ({})", crate::shortcuts::pretty("Alt+Shift+S")));
+        assert_eq!(face_tips(&app, true).selection, format!("Hide selection  ({})", crate::shortcuts::pretty("Alt+Shift+S")));
     }
 
     #[test]

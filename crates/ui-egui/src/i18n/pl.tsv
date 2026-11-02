@@ -3865,3 +3865,14 @@ curves	Smooth	Wygładź
 	Retouch AI: Color Match	Retouch AI: Dopasowanie koloru
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Automatycznie wybierz twarz
+	Basic Color: Scan Faces	Basic Color: Skanuj twarze
+	Basic Color: Show/Hide Selection	Basic Color: Pokaż/ukryj zaznaczenie
+	Color Presets: Save Current Look	Ustawienia wstępne kolorów: Zapisz bieżący wygląd
+	Color Presets: Apply Selected Preset	Ustawienia wstępne kolorów: Zastosuj wybrane ustawienie
+	Color Presets: Run Batch	Ustawienia wstępne kolorów: Uruchom partię
+	Select a Basic Color layer first.	Najpierw wybierz warstwę Basic Color.
+	Selection overlay shown.	Nakładka zaznaczenia jest widoczna.
+	Selection overlay hidden.	Nakładka zaznaczenia jest ukryta.

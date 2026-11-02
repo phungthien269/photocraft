@@ -4383,3 +4383,14 @@ shape	Appearance	Aspetto
 	Retouch AI: Color Match	Retouch AI: Corrispondenza colore
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Seleziona viso automaticamente
+	Basic Color: Scan Faces	Basic Color: Analizza volti
+	Basic Color: Show/Hide Selection	Basic Color: Mostra/nascondi selezione
+	Color Presets: Save Current Look	Predefiniti colore: Salva aspetto corrente
+	Color Presets: Apply Selected Preset	Predefiniti colore: Applica predefinito selezionato
+	Color Presets: Run Batch	Predefiniti colore: Esegui lotto
+	Select a Basic Color layer first.	Seleziona prima un livello Basic Color.
+	Selection overlay shown.	Sovrapposizione selezione mostrata.
+	Selection overlay hidden.	Sovrapposizione selezione nascosta.

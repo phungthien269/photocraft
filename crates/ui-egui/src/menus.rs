@@ -103,6 +103,13 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     if let Some(r) = crate::retouch_ai_panel::menu(app, id) {
         return r;
     }
+    // Window › Basic Color and Window › Color Presets panel actions, and their bindings.
+    if let Some(r) = crate::basic_color_panel::menu(app, id) {
+        return r;
+    }
+    if let Some(r) = crate::color_presets_panel::menu(app, id) {
+        return r;
+    }
     // A filter on a type layer asks to rasterize it first (#4303).
     if let Some(r) = crate::rasterize_prompt::intercept_filter(app, id, &params) {
         return r;
@@ -726,6 +733,13 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         i if i.starts_with("window.toggle.") => true,
         // The panel reports "Open an image to start" or its own failure without a document.
         i if i.starts_with("retouch.ai.") || i.starts_with("retouch.tool.") => true,
+        // The panels report their own no-document/no-layer status.
+        "basicColor.autoFace"
+        | "basicColor.scanFaces"
+        | "basicColor.toggleSelection"
+        | "colorPresets.save"
+        | "colorPresets.apply"
+        | "colorPresets.runBatch" => true,
         "window.togglePanels" => true,
         // With one document open the key stays quiet, as in Photoshop, rather than reporting why.
         "window.nextDocument" | "window.previousDocument" => app.session.active().is_some(),
@@ -1671,6 +1685,33 @@ mod tests {
         }
         for id in ["", "missing.command", "💾"] {
             assert!(!is_live(id));
+        }
+    }
+
+    /// Basic Color and Color Presets actions are always enabled (they report their own missing
+    /// document/layer), and they sit under their panel's Window submenu.
+    #[test]
+    fn panel_actions_are_enabled_and_grouped_under_their_window_submenus() {
+        let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let items = menu_items(&app);
+        for (id, path, key) in [
+            ("basicColor.autoFace", ["Window", "Basic Color"], "Alt+Shift+A"),
+            ("basicColor.scanFaces", ["Window", "Basic Color"], "Alt+Shift+F"),
+            ("basicColor.toggleSelection", ["Window", "Basic Color"], "Alt+Shift+S"),
+            ("colorPresets.save", ["Window", "Color Presets"], "Alt+Shift+V"),
+            ("colorPresets.apply", ["Window", "Color Presets"], "Alt+Shift+Enter"),
+            ("colorPresets.runBatch", ["Window", "Color Presets"], "Alt+Shift+R"),
+        ] {
+            assert!(is_enabled(&app, id), "{id} is always enabled");
+            let item = items.iter().find(|item| item.id == id).unwrap_or_else(|| panic!("{id} is in the menu"));
+            assert_eq!(item.path, path, "{id} sits under its panel");
+            assert_eq!(item.shortcut.as_deref(), Some(key), "{id} shows its default");
+            assert!(item.enabled, "{id} stays live without a document");
+        }
+        for (id, key) in [("window.toggle.basicColor", "Alt+B"), ("window.toggle.colorPresets", "Alt+P")] {
+            let item = items.iter().find(|item| item.id == id).unwrap_or_else(|| panic!("{id} is in the menu"));
+            assert_eq!(item.path, ["Window"], "{id} keeps its own Window item");
+            assert_eq!(item.shortcut.as_deref(), Some(key), "{id} shows its default");
         }
     }
 

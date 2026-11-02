@@ -4228,3 +4228,14 @@ navigator	Zoom	Zoom
 	Retouch AI: Color Match	Retouch AI: Igualar color
 	Basic Color	Basic Color
 	Basic Color…	Basic Color…
+
+# Basic Color and Color Presets panel actions (Window menus and their shortcuts)
+	Basic Color: Auto-select Face	Basic Color: Seleccionar cara automáticamente
+	Basic Color: Scan Faces	Basic Color: Analizar caras
+	Basic Color: Show/Hide Selection	Basic Color: Mostrar/ocultar selección
+	Color Presets: Save Current Look	Ajustes preestablecidos de color: Guardar aspecto actual
+	Color Presets: Apply Selected Preset	Ajustes preestablecidos de color: Aplicar ajuste seleccionado
+	Color Presets: Run Batch	Ajustes preestablecidos de color: Ejecutar lote
+	Select a Basic Color layer first.	Selecciona primero una capa de Basic Color.
+	Selection overlay shown.	Superposición de selección mostrada.
+	Selection overlay hidden.	Superposición de selección oculta.

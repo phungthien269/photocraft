@@ -493,6 +493,16 @@ fn failed_edit(app: &mut PhotocraftApp, error: &str) {
     set_status(app, message, true);
 }
 
+/// The effective shortcut hints of the Save and Run buttons, read before the panel borrows its
+/// state mutably. A cleared binding leaves the plain label.
+fn save_tip(app: &PhotocraftApp) -> String {
+    crate::shortcuts::tip_label(app, text::SAVE, "colorPresets.save")
+}
+
+fn run_tip(app: &PhotocraftApp) -> String {
+    crate::shortcuts::tip_label(app, text::RUN, "colorPresets.runBatch")
+}
+
 // ------------------------------------------------------------------ commands
 
 /// Where a saved preset lands: open its group, select it and start the inline rename.
@@ -622,6 +632,32 @@ fn queue_batch(app: &mut PhotocraftApp) {
     app.ui.color_presets.last_batch = Some(params.clone());
     app.ui.color_presets.batch_resume_ready = false;
     app.ui.color_presets.batch_pending = Some(params);
+}
+
+/// The panel's commands (`colorPresets.*`): Window › Color Presets and Edit › Keyboard
+/// Shortcuts. Each one shows the panel first, so its result is visible whichever way it was
+/// called.
+pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, String>> {
+    let action = match id {
+        "colorPresets.save" => "save",
+        "colorPresets.apply" => "apply",
+        "colorPresets.runBatch" => "runBatch",
+        _ => return None,
+    };
+    app.ui.panels.color_presets = true;
+    match action {
+        "save" => save_current(app),
+        "apply" => {
+            let Some(name) = app.ui.presets_ui.selected.get(PANEL).cloned().filter(|name| !name.trim().is_empty()) else {
+                set_status(app, tl!(text::SELECT_PRESET).into(), true);
+                return Some(Ok(json!({"action": action})));
+            };
+            apply_preset(app, &name);
+        }
+        "runBatch" => queue_batch(app),
+        _ => return None,
+    }
+    Some(Ok(json!({"action": action})))
 }
 
 fn clear_batch_job(app: &mut PhotocraftApp) {
@@ -1004,7 +1040,7 @@ fn folder_field(ui: &mut egui::Ui, label: &str, value: &mut String, pick: Action
     });
 }
 
-fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document: bool, actions: &mut Vec<Action>) {
+fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document: bool, run_tip: &str, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
     widgets::hairline(ui);
     let open = state.batch_open;
@@ -1045,7 +1081,7 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
     });
     ui.checkbox(&mut state.include_subfolders, tl!(text::INCLUDE_SUBFOLDERS));
     ui.checkbox(&mut state.keep_partial, tl!(text::KEEP_PARTIAL));
-    let run = ui.add_enabled(has_document && !state.batch_running, egui::Button::new(tl!(text::RUN)));
+    let run = ui.add_enabled(has_document && !state.batch_running, egui::Button::new(tl!(text::RUN))).on_hover_text(run_tip);
     if run.clicked() {
         actions.push(Action::RunBatch);
     }
@@ -1090,6 +1126,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     let has_document = app.session.active_index().is_some();
     let can_save = has_capturable_adjustment(app);
+    let save_hint = save_tip(app);
+    let run_hint = run_tip(app);
     let library = fetch_library(app);
     let shown = filter_library(&library, &app.ui.color_presets.search);
     let groups: Vec<GroupView> = shown
@@ -1165,6 +1203,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             let body = egui::ScrollArea::vertical().id_salt("color-presets-body").max_height(body_height).auto_shrink([false, true]).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let save = ui.add_enabled_ui(can_save, |ui| widgets::primary_button(ui, tl!(text::SAVE), ui.available_width())).inner;
+                let save = save.on_hover_text(save_hint.as_str());
                 if save.clicked() {
                     actions.push(Action::Save);
                 }
@@ -1186,7 +1225,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 }
                 let max_h = (body_height - 296.0).clamp(90.0, 280.0);
                 events = preset_panels::browser(ui, &mut st, PANEL, &groups, Place { canvas, max_h, new_tip: tl!(text::NEW), flush: false }, thumb);
-                batch_section(ui, &mut app.ui.color_presets, has_document, &mut actions);
+                batch_section(ui, &mut app.ui.color_presets, has_document, run_hint.as_str(), &mut actions);
                 ui.add_space(2.0);
             });
             // What the tests measure: the body's viewport and the height of all its content.
@@ -1388,6 +1427,110 @@ mod tests {
         apply_preset(&mut app, "Warm Portrait");
         assert_eq!(app.ui.color_presets.status, text::OPEN_IMAGE);
         assert_ne!(app.perf.last_command, "color.presets.apply");
+    }
+
+    /// The three panel actions work as commands (Window › Color Presets and Edit › Keyboard
+    /// Shortcuts): each shows the panel and reports its result, with or without a document.
+    #[test]
+    fn menu_commands_open_the_panel_and_run_their_action() {
+        const ACTIONS: [(&str, &str); 3] = [("colorPresets.save", "save"), ("colorPresets.apply", "apply"), ("colorPresets.runBatch", "runBatch")];
+        let ctx = egui::Context::default();
+        let mut app = app();
+        for (id, action) in ACTIONS {
+            app.ui.panels.color_presets = false;
+            app.ui.color_presets.status.clear();
+            app.ui.color_presets.batch_status.clear();
+            let value = crate::menus::invoke(&mut app, &ctx, id, json!({})).expect("command");
+            assert_eq!(value["action"], action, "{id} returns its action");
+            assert!(app.ui.panels.color_presets, "{id} opens the panel");
+            match action {
+                "save" => assert_eq!(app.ui.color_presets.status, text::OPEN_IMAGE, "{id} asks for a document"),
+                "apply" => assert_eq!(app.ui.color_presets.status, text::SELECT_PRESET, "{id} asks for a preset"),
+                "runBatch" => assert_eq!(app.ui.color_presets.batch_status, text::SELECT_PRESET, "{id} asks for a preset"),
+                _ => {}
+            }
+        }
+        assert!(menu(&mut app, "colorPresets.missing").is_none(), "unknown ids are left to the other handlers");
+
+        // With a document the commands reach their engine paths and update the panel.
+        let mut app = app_with_document();
+        app.ui.panels.color_presets = false;
+        let value = crate::menus::invoke(&mut app, &ctx, "colorPresets.save", json!({})).expect("save");
+        assert_eq!(value["action"], "save");
+        assert!(app.ui.panels.color_presets, "save opens the panel");
+        assert!(app.ui.color_presets.status.contains("Look 1") && !app.ui.color_presets.status_error, "{}", app.ui.color_presets.status);
+        assert!(library_names(&app).contains(&"Look 1".to_string()));
+
+        app.ui.presets_ui.selected.insert(PANEL.into(), "Warm Portrait".into());
+        let value = crate::menus::invoke(&mut app, &ctx, "colorPresets.apply", json!({})).expect("apply");
+        assert_eq!(value["action"], "apply");
+        assert_eq!(app.perf.last_command, "color.presets.apply");
+        assert!(app.ui.color_presets.status.contains("Warm Portrait") && !app.ui.color_presets.status_error);
+        let st = app.session.active().expect("document");
+        assert!(st.doc.layers.iter().any(|layer| layer.name == "Preset • Warm Portrait"));
+
+        // Run Batch reuses the panel's validation and waits for the next frame to start.
+        let value = crate::menus::invoke(&mut app, &ctx, "colorPresets.runBatch", json!({})).expect("batch");
+        assert_eq!(value["action"], "runBatch");
+        assert_eq!(app.ui.color_presets.batch_status, text::CHOOSE_FOLDERS);
+        assert!(app.ui.color_presets.batch_status_error);
+        app.ui.color_presets.batch_input = "/tmp/photocraft-in".into();
+        app.ui.color_presets.batch_output = "/tmp/photocraft-out".into();
+        crate::menus::invoke(&mut app, &ctx, "colorPresets.runBatch", json!({})).expect("batch");
+        assert!(app.ui.color_presets.batch_pending.is_some(), "a valid batch waits for the next frame");
+        assert!(app.ui.color_presets.batch_status.is_empty());
+    }
+
+    /// The new commands are listed by Edit › Keyboard Shortcuts with their defaults, the
+    /// dispatch table binds those keys, and rebinding or clearing reaches both.
+    #[test]
+    fn shortcut_settings_list_the_color_presets_actions_and_their_defaults() {
+        let mut app = app();
+        let items = crate::prefs_ui::shortcut_items(&app);
+        let table = crate::shortcut_dispatch::bindings(&app);
+        let specs: [(&str, &str, &[&str]); 4] = [
+            ("colorPresets.save", "Alt+Shift+V", &["Window", "Color Presets"]),
+            ("colorPresets.apply", "Alt+Shift+Enter", &["Window", "Color Presets"]),
+            ("colorPresets.runBatch", "Alt+Shift+R", &["Window", "Color Presets"]),
+            ("window.toggle.colorPresets", "Alt+P", &["Window"]),
+        ];
+        for (id, key, path) in specs {
+            assert_eq!(crate::shortcuts::default_shortcut(id).as_deref(), Some(key), "{id} default");
+            let item = items.iter().find(|item| item.0 == id).unwrap_or_else(|| panic!("{id} is listed"));
+            assert_eq!(item.2, path.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>(), "{id} groups under its panel");
+            assert_eq!(item.3.as_deref(), Some(key), "{id} shows its default");
+            let parsed = crate::shortcuts::parse(key).unwrap_or_else(|| panic!("{id}: unparsable {key}"));
+            assert!(table.iter().any(|(bound, sc)| bound == id && *sc == parsed), "{id} is bound to {key}");
+        }
+        let all = crate::menus::UI_COMMANDS
+            .iter()
+            .filter_map(|(id, _, _, sc)| sc.map(|s| (*id, s)))
+            .chain(photocraft_engine::command_specs().iter().filter_map(|c| c.shortcut.map(|s| (c.id, s))));
+        let conflicts = photocraft_engine::prefs::conflicts(all);
+        assert!(conflicts.is_empty(), "the defaults conflict with nothing: {conflicts:?}");
+
+        let rebound = crate::shortcuts::parse("Alt+Shift+Z").expect("rebound key");
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("colorPresets.save".into(), "Alt+Shift+Z".into());
+        });
+        assert!(crate::shortcut_dispatch::bindings(&app).iter().any(|(id, sc)| id == "colorPresets.save" && *sc == rebound));
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("colorPresets.save".into(), String::new());
+        });
+        assert!(!crate::shortcut_dispatch::bindings(&app).iter().any(|(id, _)| id == "colorPresets.save"), "a cleared shortcut is unbound");
+    }
+
+    /// The Save and Run tooltips read the effective binding: an override replaces the default
+    /// and a cleared binding leaves the plain label.
+    #[test]
+    fn tooltips_follow_shortcut_overrides() {
+        let mut app = app_with_document();
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("colorPresets.save".into(), "Alt+Shift+Z".into());
+            prefs.shortcuts.insert("colorPresets.runBatch".into(), String::new());
+        });
+        assert_eq!(save_tip(&app), format!("Save current look  ({})", crate::shortcuts::pretty("Alt+Shift+Z")));
+        assert_eq!(run_tip(&app), text::RUN, "a cleared binding leaves the plain label");
     }
 
     #[test]
