@@ -4007,3 +4007,6 @@ cameraData	Lens	Lens
 	Select a Basic Color layer first.	Önce bir Basic Color katmanı seçin.
 	Selection overlay shown.	Seçim kaplaması gösterildi.
 	Selection overlay hidden.	Seçim kaplaması gizlendi.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Yüz Şekillendirme
+	Face Reshape: Apply	Yüz Şekillendirme: Uygula

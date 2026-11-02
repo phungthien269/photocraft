@@ -126,6 +126,75 @@ fn reset_failed() -> &'static str {
     pick("Reset failed: {error}", "Không thể đặt lại: {error}")
 }
 
+fn face_mode_label() -> &'static str {
+    pick("Faces", "Khuôn mặt")
+}
+
+fn face_main_label() -> &'static str {
+    pick("Main", "Chính")
+}
+
+fn face_all_label() -> &'static str {
+    pick("All", "Tất cả")
+}
+
+fn face_selected_label() -> &'static str {
+    pick("Selected", "Đã chọn")
+}
+
+fn face_number_label() -> &'static str {
+    pick("Face {n}", "Mặt {n}")
+}
+
+fn preset_label() -> &'static str {
+    pick("Preset", "Preset")
+}
+
+fn save_preset_label() -> &'static str {
+    pick("Save Current", "Lưu hiện tại")
+}
+
+fn preset_name_hint() -> &'static str {
+    pick("Preset name", "Tên preset")
+}
+
+fn delete_preset_label() -> &'static str {
+    pick("Delete", "Xóa")
+}
+
+fn preset_saved() -> &'static str {
+    pick("Preset \"{name}\" saved.", "Đã lưu preset \"{name}\".")
+}
+
+fn preset_deleted() -> &'static str {
+    pick("Preset \"{name}\" deleted.", "Đã xóa preset \"{name}\".")
+}
+
+fn preset_empty() -> &'static str {
+    pick("Name the preset before saving.", "Hãy đặt tên preset trước khi lưu.")
+}
+
+fn custom_preset_label() -> &'static str {
+    pick("Custom", "Tùy chỉnh")
+}
+
+fn preset_missing() -> &'static str {
+    pick("That preset no longer exists.", "Preset đó không còn tồn tại.")
+}
+
+const PRESET_NAMES: [(&str, &str, &str); 6] = [
+    ("natural", "Natural", "Tự nhiên"),
+    ("vLine", "V-Line", "V-Line"),
+    ("bigEyes", "Big Eyes", "Mắt to"),
+    ("slimNose", "Slim Nose", "Mũi thon"),
+    ("fullLips", "Full Lips", "Môi đầy"),
+    ("profileBalance", "Profile Balance", "Cân bằng nghiêng"),
+];
+
+fn preset_name(key: &str) -> &'static str {
+    PRESET_NAMES.iter().find(|(k, _, _)| *k == key).map_or(custom_preset_label(), |(_, en, vi)| pick(en, vi))
+}
+
 // ---------------------------------------------------------------------------------------------
 // Groups and labels
 // ---------------------------------------------------------------------------------------------
@@ -448,8 +517,112 @@ face_reshape_params! {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------------------------
+
+/// Built-in looks: a key, its English/Vietnamese name in [`PRESET_NAMES`], and the non-zero
+/// sliders. Every other slider stays 0. Keys are internal; the panel translates the labels.
+pub const BUILTIN_PRESETS: [(&str, &[(&str, f32)]); 6] = [
+    (
+        "natural",
+        &[
+            ("face_slim", 8.0),
+            ("face_width", 4.0),
+            ("jaw_width", -5.0),
+            ("cheek_slim", 6.0),
+            ("eye_size", 6.0),
+            ("eye_brow_distance", 3.0),
+            ("nose_tip_size", -4.0),
+            ("lip_plumpness", 6.0),
+            ("face_symmetry", 8.0),
+        ],
+    ),
+    (
+        "vLine",
+        &[
+            ("face_slim", 25.0),
+            ("face_length", 6.0),
+            ("jaw_width", -22.0),
+            ("jaw_angle", 18.0),
+            ("cheek_slim", 15.0),
+            ("chin_width", -12.0),
+            ("chin_length", 8.0),
+            ("face_symmetry", 10.0),
+        ],
+    ),
+    ("bigEyes", &[("eye_size", 32.0), ("eye_width", 14.0), ("eye_height", 10.0), ("lower_eyelid_down", 8.0), ("aegyo_sal", 10.0), ("pupil_scale", 6.0)]),
+    (
+        "slimNose",
+        &[
+            ("nose_scale", -18.0),
+            ("nose_wing_width", -20.0),
+            ("nose_tip_size", -12.0),
+            ("bridge_width", -14.0),
+            ("nasal_hump_reduction", 10.0),
+            ("nostril_size", -10.0),
+        ],
+    ),
+    (
+        "fullLips",
+        &[
+            ("mouth_scale", 8.0),
+            ("mouth_width", 4.0),
+            ("upper_lip_thickness", 20.0),
+            ("lower_lip_thickness", 18.0),
+            ("lip_plumpness", 30.0),
+            ("m_lip_shape", 15.0),
+            ("smile_corners", 8.0),
+        ],
+    ),
+    (
+        "profileBalance",
+        &[
+            ("nose_length", 8.0),
+            ("bridge_curvature", -8.0),
+            ("nasal_hump_reduction", 15.0),
+            ("chin_protrusion", 12.0),
+            ("chin_length", 6.0),
+            ("e_line_adjustment", 10.0),
+            ("midface_projection", 8.0),
+            ("three_section_ratio", 5.0),
+        ],
+    ),
+];
+
+/// A built-in preset's full 68-slider set.
+pub fn builtin_params(key: &str) -> Option<FaceReshapeParams> {
+    let (_, values) = BUILTIN_PRESETS.iter().find(|(k, _)| *k == key)?;
+    let mut params = FaceReshapeParams::default();
+    for (key, value) in *values {
+        params.set(key, *value);
+    }
+    Some(params)
+}
+
+/// A user preset saved from the panel: a name and the full 68-slider set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceReshapePreset {
+    pub name: String,
+    pub params: FaceReshapeParams,
+}
+
+// ---------------------------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------------------------
+
+/// Which detected faces the preview/apply calls ask for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FaceMode {
+    /// The best face (the engine's default).
+    #[default]
+    Main,
+    /// Every detected face.
+    All,
+    /// The numbered faces in [`FaceReshapeState::selected_faces`].
+    Selected,
+}
 
 /// Face Reshape panel state, persisted with the rest of [`crate::state::UiState`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -476,6 +649,18 @@ pub struct FaceReshapeState {
     /// The drag generation used to build one coalesce key per slider drag.
     #[serde(skip)]
     pub gesture: u64,
+    /// Main, every face, or the numbered selection below.
+    pub face_mode: FaceMode,
+    /// 1-based faces selected in [`FaceMode::Selected`], in the detector's order.
+    pub selected_faces: Vec<usize>,
+    /// How many faces the last preview/apply detected; checkboxes appear above one.
+    pub detected_faces: usize,
+    /// User presets saved from the panel (built-ins live in [`BUILTIN_PRESETS`]).
+    pub presets: Vec<FaceReshapePreset>,
+    /// The last preset picked, `builtin:<key>` or `user:<name>`, for the dropdown's check mark.
+    pub last_preset: String,
+    /// The name typed for Save Current.
+    pub preset_name: String,
 }
 
 impl FaceReshapeState {
@@ -489,6 +674,117 @@ impl FaceReshapeState {
         if self.active_group >= GROUPS.len() {
             self.active_group = 0;
         }
+        self.selected_faces.retain(|n| *n >= 1);
+        self.selected_faces.sort_unstable();
+        self.selected_faces.dedup();
+        if self.detected_faces > 0 {
+            if self.face_mode == FaceMode::Selected && self.detected_faces < 2 {
+                self.face_mode = FaceMode::Main;
+            }
+            self.selected_faces.retain(|n| *n <= self.detected_faces);
+        }
+    }
+
+    /// The engine's `faces` value for preview/apply.
+    pub fn faces_value(&self) -> Value {
+        match self.face_mode {
+            FaceMode::Main => json!("main"),
+            FaceMode::All => json!("all"),
+            FaceMode::Selected if self.selected_faces.is_empty() => json!("main"),
+            FaceMode::Selected => json!(self.selected_faces),
+        }
+    }
+
+    /// Take the detection count from an engine result and keep the selection valid.
+    pub fn set_detected_faces(&mut self, count: usize) {
+        self.detected_faces = count;
+        if count < 2 {
+            self.face_mode = FaceMode::Main;
+            self.selected_faces.clear();
+        } else {
+            self.selected_faces.retain(|n| *n <= count);
+            if self.face_mode == FaceMode::Selected && self.selected_faces.is_empty() {
+                self.selected_faces = (1..=count).collect();
+            }
+        }
+    }
+
+    /// Whether face `n` is checked. A Selected mode with no stored numbers means every face.
+    pub fn face_checked(&self, n: usize) -> bool {
+        self.selected_faces.is_empty() || self.selected_faces.contains(&n)
+    }
+
+    /// Toggle one face in Selected mode; at least one face always stays checked.
+    pub fn toggle_face(&mut self, n: usize, count: usize) {
+        if count == 0 || n == 0 || n > count {
+            return;
+        }
+        let mut selected = if self.selected_faces.is_empty() { (1..=count).collect() } else { self.selected_faces.clone() };
+        if let Some(pos) = selected.iter().position(|x| *x == n) {
+            if selected.len() == 1 {
+                return;
+            }
+            selected.remove(pos);
+        } else {
+            selected.push(n);
+        }
+        selected.sort_unstable();
+        selected.dedup();
+        self.selected_faces = selected;
+    }
+
+    /// Apply a built-in preset. Returns true when `key` names one.
+    pub fn apply_builtin(&mut self, key: &str) -> bool {
+        let Some(params) = builtin_params(key) else { return false };
+        self.params = params;
+        self.last_preset = format!("builtin:{key}");
+        self.dirty = true;
+        true
+    }
+
+    /// Apply a saved user preset by name.
+    pub fn apply_user_preset(&mut self, name: &str) -> bool {
+        let Some(preset) = self.presets.iter().find(|preset| preset.name == name) else { return false };
+        self.params = preset.params;
+        self.last_preset = format!("user:{name}");
+        self.dirty = true;
+        true
+    }
+
+    /// Save the current 68 sliders as a named user preset, replacing a preset with the same name.
+    pub fn save_preset(&mut self, name: &str) -> std::result::Result<(), &'static str> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("empty");
+        }
+        let preset = FaceReshapePreset { name: name.to_string(), params: self.params };
+        match self.presets.iter_mut().find(|existing| existing.name == name) {
+            Some(existing) => *existing = preset,
+            None => self.presets.push(preset),
+        }
+        self.last_preset = format!("user:{name}");
+        self.preset_name.clear();
+        Ok(())
+    }
+
+    /// Delete the selected user preset. Returns its name when one was removed.
+    pub fn delete_selected_preset(&mut self) -> Option<String> {
+        let name = self.last_preset.strip_prefix("user:")?.to_string();
+        let at = self.presets.iter().position(|preset| preset.name == name)?;
+        self.presets.remove(at);
+        self.last_preset.clear();
+        Some(name)
+    }
+
+    /// The preset dropdown's text for the current selection.
+    pub fn preset_label(&self) -> String {
+        if let Some(key) = self.last_preset.strip_prefix("builtin:") {
+            return preset_name(key).to_string();
+        }
+        if let Some(name) = self.last_preset.strip_prefix("user:") {
+            return name.to_string();
+        }
+        custom_preset_label().to_string()
     }
 
     /// Zero every slider and forget the preview. Returns the preview id that was live.
@@ -526,6 +822,7 @@ fn command_payload(state: &FaceReshapeState) -> serde_json::Map<String, Value> {
 fn preview_payload(state: &FaceReshapeState, coalesce: Option<&str>) -> Value {
     let mut payload = command_payload(state);
     payload.insert("params".into(), state.params.to_json());
+    payload.insert("faces".into(), state.faces_value());
     payload.insert("preview".into(), json!(true));
     if let Some(key) = coalesce {
         payload.insert("coalesce".into(), json!(key));
@@ -536,6 +833,7 @@ fn preview_payload(state: &FaceReshapeState, coalesce: Option<&str>) -> Value {
 fn apply_payload(state: &FaceReshapeState) -> Value {
     let mut payload = command_payload(state);
     payload.insert("params".into(), state.params.to_json());
+    payload.insert("faces".into(), state.faces_value());
     payload.insert("preview".into(), json!(false));
     Value::Object(payload)
 }
@@ -586,6 +884,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         state.dirty = false;
         state.status.clear();
         state.status_error = false;
+        state.detected_faces = 0;
+        state.selected_faces.clear();
+        state.face_mode = FaceMode::Main;
     }
     if has_document && state.preview_layer.is_none() {
         // Follow the layer the user selects until a preview exists; after that the preview's
@@ -633,6 +934,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 return;
             }
 
+            preset_row(ui, state, &mut actions);
+            face_choice_row(ui, state, &mut actions);
             top_controls(ui, state, &mut actions);
             let body = egui::ScrollArea::vertical().id_salt("face-reshape-body").max_height(body_height).auto_shrink([false, true]).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -690,6 +993,105 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     for action in actions {
         apply(app, action);
     }
+}
+
+fn preset_row(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
+    let mut chosen: Option<String> = None;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(preset_label()).size(10.5).color(Tokens::get(ui.ctx()).text_faint));
+        let mut label = state.preset_label();
+        if label.is_empty() {
+            label = custom_preset_label().to_string();
+        }
+        egui::ComboBox::from_id_salt("face-reshape-preset").selected_text(label).width(150.0).icon(widgets::chevron_icon).show_ui(ui, |ui| {
+            if ui.selectable_label(state.last_preset.is_empty(), custom_preset_label()).clicked() {
+                chosen = Some(String::new());
+            }
+            for (key, _) in BUILTIN_PRESETS {
+                if ui.selectable_label(state.last_preset == format!("builtin:{key}"), preset_name(key)).clicked() {
+                    chosen = Some(format!("builtin:{key}"));
+                }
+            }
+            for preset in &state.presets {
+                if ui.selectable_label(state.last_preset == format!("user:{}", preset.name), &preset.name).clicked() {
+                    chosen = Some(format!("user:{}", preset.name));
+                }
+            }
+        });
+        let can_delete = state.last_preset.starts_with("user:");
+        if ui.add_enabled(can_delete, egui::Button::new(delete_preset_label())).clicked()
+            && let Some(name) = state.delete_selected_preset()
+        {
+            let message = crate::i18n::fmt(preset_deleted(), &[("name", &name)]);
+            set_status(state, message, false);
+        }
+    });
+    if let Some(key) = chosen {
+        if key.is_empty() {
+            state.last_preset.clear();
+        } else if let Some(builtin) = key.strip_prefix("builtin:") {
+            if state.apply_builtin(builtin) {
+                actions.push(Action::Preview { payload: preview_payload(state, None) });
+            }
+        } else if let Some(name) = key.strip_prefix("user:") {
+            if state.apply_user_preset(name) {
+                actions.push(Action::Preview { payload: preview_payload(state, None) });
+            } else {
+                set_status(state, preset_missing().to_string(), true);
+            }
+        }
+    }
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - 106.0).max(90.0);
+        ui.add_sized([width, 20.0], egui::TextEdit::singleline(&mut state.preset_name).hint_text(preset_name_hint()));
+        if widgets::secondary_button(ui, save_preset_label(), 0.0).clicked() {
+            match state.save_preset(&state.preset_name.clone()) {
+                Ok(()) => {
+                    let name = state.last_preset.strip_prefix("user:").unwrap_or_default().to_string();
+                    let message = crate::i18n::fmt(preset_saved(), &[("name", &name)]);
+                    set_status(state, message, false);
+                }
+                Err(_) => set_status(state, preset_empty().to_string(), true),
+            }
+        }
+    });
+    ui.add_space(4.0);
+}
+
+fn face_choice_row(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
+    let before = (state.face_mode, state.selected_faces.clone());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(face_mode_label()).size(10.5).color(Tokens::get(ui.ctx()).text_faint));
+        for (mode, label) in [(FaceMode::Main, face_main_label()), (FaceMode::All, face_all_label())] {
+            if ui.selectable_label(state.face_mode == mode, label).clicked() {
+                state.face_mode = mode;
+            }
+        }
+        if ui.add_enabled(state.detected_faces > 1, egui::Button::selectable(state.face_mode == FaceMode::Selected, face_selected_label())).clicked() {
+            state.face_mode = FaceMode::Selected;
+            if state.selected_faces.is_empty() && state.detected_faces > 0 {
+                state.selected_faces = (1..=state.detected_faces).collect();
+            }
+        }
+    });
+    if state.face_mode == FaceMode::Selected && state.detected_faces > 1 {
+        ui.horizontal_wrapped(|ui| {
+            for n in 1..=state.detected_faces {
+                let mut on = state.face_checked(n);
+                let label = crate::i18n::fmt(face_number_label(), &[("n", &n.to_string())]);
+                if widgets::checkbox(ui, &mut on, &label).changed() {
+                    state.toggle_face(n, state.detected_faces);
+                }
+            }
+        });
+    }
+    let changed = before.0 != state.face_mode || before.1 != state.selected_faces;
+    // Re-preview a live deformation so the chosen faces show at once; an all-zero set has
+    // nothing to warp and only records the choice.
+    if changed && !state.params.is_identity() {
+        actions.push(Action::Preview { payload: preview_payload(state, None) });
+    }
+    ui.add_space(4.0);
 }
 
 fn top_controls(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
@@ -800,6 +1202,9 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
             let state = &mut app.ui.face_reshape;
             match result {
                 Ok(value) => {
+                    if let Some(detected) = value.get("detected").and_then(Value::as_u64) {
+                        state.set_detected_faces(detected as usize);
+                    }
                     state.preview_layer = value.get("layer").and_then(Value::as_u64);
                     state.compare = value.get("compare").and_then(Value::as_bool).unwrap_or(false);
                     state.dirty = !state.params.is_identity();
@@ -821,7 +1226,10 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
             app.ui.face_reshape.busy = false;
             let state = &mut app.ui.face_reshape;
             match result {
-                Ok(_) => {
+                Ok(value) => {
+                    if let Some(detected) = value.get("detected").and_then(Value::as_u64) {
+                        state.set_detected_faces(detected as usize);
+                    }
                     state.preview_layer = None;
                     state.compare = false;
                     state.dirty = false;
@@ -854,6 +1262,50 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
                 Err(error) => set_status(state, crate::i18n::fmt(reset_failed(), &[("error", &error)]), true),
             }
         }
+    }
+}
+
+/// The panel's commands: Window › Face Reshape and `faceReshape.apply` (Edit › Keyboard
+/// Shortcuts). Toggle flips the window; Apply runs the panel's own Apply payload, opening the
+/// window first so its status line shows the result whichever way it was called.
+pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, String>> {
+    match id {
+        "window.toggle.faceReshape" => {
+            app.ui.panels.face_reshape = !app.ui.panels.face_reshape;
+            Some(Ok(json!({"open": app.ui.panels.face_reshape})))
+        }
+        "faceReshape.apply" => {
+            app.ui.panels.face_reshape = true;
+            let document = app.session.active().map(|st| st.doc.id.0);
+            let active = app.session.active().and_then(|st| st.active_layer).map(|id| id.0);
+            {
+                let state = &mut app.ui.face_reshape;
+                state.ensure();
+                if state.document != document {
+                    state.document = document;
+                    state.preview_layer = None;
+                    state.source_layer = None;
+                    state.compare = false;
+                    state.dirty = false;
+                    state.status.clear();
+                    state.status_error = false;
+                    state.detected_faces = 0;
+                    state.selected_faces.clear();
+                    state.face_mode = FaceMode::Main;
+                }
+                if state.source_layer.is_none() {
+                    state.source_layer = active;
+                }
+            }
+            if app.session.active_index().is_none() {
+                set_status(&mut app.ui.face_reshape, open_hint().to_string(), true);
+                return Some(Ok(json!({"action": "apply"})));
+            }
+            let payload = apply_payload(&app.ui.face_reshape);
+            apply(app, Action::Apply { payload });
+            Some(Ok(json!({"action": "apply"})))
+        }
+        _ => None,
     }
 }
 
@@ -992,12 +1444,14 @@ mod tests {
         assert_eq!(preview["params"].as_object().map(serde_json::Map::len), Some(68), "all 68 keys go to the engine");
         assert_eq!(preview["params"]["jaw_width"], 25.0);
         assert_eq!(preview["params"]["lip_plumpness"], -12.0);
+        assert_eq!(preview["faces"], "main", "Main is the engine's default face choice");
 
         let apply = apply_payload(&state);
         assert_eq!(apply["preview"], false, "Apply asks for the final layer");
         assert_eq!(apply["layer"], 3);
         assert_eq!(apply["previewLayer"], 4);
         assert_eq!(apply["params"]["jaw_width"], 25.0);
+        assert_eq!(apply["faces"], "main");
 
         let compare = compare_payload(&state, true);
         assert_eq!(compare["compare"], true);
@@ -1019,6 +1473,15 @@ mod tests {
         assert_eq!(group_title(5), "Proportions & Neck");
         assert_eq!(label("head_scale"), "Head scale");
         assert_eq!(label("double_chin_warp"), "Double chin");
+        assert_eq!(face_mode_label(), "Faces");
+        assert_eq!(face_main_label(), "Main");
+        assert_eq!(face_all_label(), "All");
+        assert_eq!(face_selected_label(), "Selected");
+        assert_eq!(preset_label(), "Preset");
+        assert_eq!(save_preset_label(), "Save Current");
+        assert_eq!(preset_name("natural"), "Natural");
+        assert_eq!(preset_name("profileBalance"), "Profile Balance");
+        assert_eq!(crate::i18n::tr(crate::i18n::Lang::EN, "Face Reshape"), "Face Reshape");
 
         let vi = crate::i18n::Lang::from_code("vi").expect("vi is registered");
         crate::i18n::with_language(vi, || {
@@ -1036,6 +1499,18 @@ mod tests {
             assert_eq!(label("nose_tip_angle"), "Góc đầu mũi");
             assert_eq!(label("upper_lip_thickness"), "Độ dày môi trên");
             assert_eq!(label("neck_slim"), "Thu gọn cổ");
+            assert_eq!(face_mode_label(), "Khuôn mặt");
+            assert_eq!(face_main_label(), "Chính");
+            assert_eq!(face_all_label(), "Tất cả");
+            assert_eq!(face_selected_label(), "Đã chọn");
+            assert_eq!(face_number_label(), "Mặt {n}");
+            assert_eq!(preset_label(), "Preset");
+            assert_eq!(save_preset_label(), "Lưu hiện tại");
+            assert_eq!(preset_name("natural"), "Tự nhiên");
+            assert_eq!(preset_name("bigEyes"), "Mắt to");
+            assert_eq!(preset_name("profileBalance"), "Cân bằng nghiêng");
+            assert_eq!(crate::i18n::tr(vi, "Face Reshape"), "Định hình khuôn mặt");
+            assert_eq!(crate::i18n::tr(vi, "Face Reshape: Apply"), "Định hình khuôn mặt: Áp dụng");
         });
         for key in FaceReshapeParams::KEYS {
             assert!(!label(key).is_empty(), "no label for {key}");
@@ -1085,5 +1560,213 @@ mod tests {
         let slider_rect = h.query_all_by_role(egui::accesskit::Role::Slider).next().expect("the first slider").rect();
         clicks_with(&mut h, slider_rect.center(), 2);
         assert_eq!(h.state().ui.face_reshape.params.head_scale, 0.0, "double-click on the slider resets");
+    }
+
+    #[test]
+    fn builtin_presets_cover_the_six_named_looks() {
+        assert_eq!(BUILTIN_PRESETS.len(), 6);
+        assert_eq!(PRESET_NAMES.len(), 6);
+        assert_eq!(preset_name("natural"), "Natural");
+        assert_eq!(preset_name("vLine"), "V-Line");
+        assert_eq!(preset_name("bigEyes"), "Big Eyes");
+        assert_eq!(preset_name("slimNose"), "Slim Nose");
+        assert_eq!(preset_name("fullLips"), "Full Lips");
+        assert_eq!(preset_name("profileBalance"), "Profile Balance");
+        for (key, values) in BUILTIN_PRESETS {
+            assert!(!values.is_empty(), "{key} has values");
+            let params = builtin_params(key).unwrap_or_else(|| panic!("{key} builds"));
+            assert!(!params.is_identity(), "{key} changes something");
+            for (slider, value) in values {
+                assert_eq!(params.get(slider), Some(*value), "{key}.{slider}");
+            }
+        }
+        assert!(builtin_params("missing").is_none());
+    }
+
+    #[test]
+    fn user_presets_save_the_current_sixty_eight_sliders_and_round_trip() {
+        let mut state = FaceReshapeState::default();
+        state.params.set("jaw_width", 44.0);
+        state.params.set("eye_size", -8.0);
+        state.params.set("lip_plumpness", 12.0);
+        state.save_preset("My Look").expect("a name saves");
+        assert_eq!(state.last_preset, "user:My Look");
+        assert_eq!(state.preset_label(), "My Look");
+        let preset = state.presets.first().expect("saved");
+        assert_eq!(preset.params.entries().len(), 68, "the full 68-slider set is captured");
+        assert_eq!(preset.params.get("jaw_width"), Some(44.0));
+        assert_eq!(preset.params.get("eye_size"), Some(-8.0));
+        assert_eq!(preset.params.get("nose_scale"), Some(0.0), "untouched sliders save as zero");
+        assert!(state.save_preset("  ").is_err(), "an empty name is refused");
+
+        state.params = FaceReshapeParams::default();
+        assert!(state.apply_user_preset("My Look"));
+        assert_eq!(state.params.get("jaw_width"), Some(44.0));
+        assert!(!state.apply_user_preset("missing"));
+        assert_eq!(state.delete_selected_preset().as_deref(), Some("My Look"));
+        assert!(state.presets.is_empty());
+
+        state.save_preset("Saved").unwrap();
+        let back: FaceReshapeState = serde_json::from_str(&serde_json::to_string(&state).expect("serialize")).expect("deserialize");
+        assert_eq!(back.presets, state.presets, "user presets persist in UI state");
+    }
+
+    #[test]
+    fn choosing_a_preset_sets_its_params_and_runs_a_preview() {
+        let mut h = draw(document_app(), vec2(1000.0, 900.0), 0.25);
+        h.query_all_by_role(egui::accesskit::Role::ComboBox).next().expect("the preset dropdown").click();
+        h.run_steps(3);
+        h.get_by_label("V-Line").click();
+        h.run_steps(3);
+        let state = &h.state().ui.face_reshape;
+        assert_eq!(state.params.get("jaw_angle"), Some(18.0), "the preset set its sliders");
+        assert_eq!(state.last_preset, "builtin:vLine");
+        // The blank test document has no face, so the preview that the preset queued reports why.
+        assert!(state.status_error, "{}", state.status);
+        assert!(state.status.contains("no face"), "{}", state.status);
+    }
+
+    #[test]
+    fn applying_a_builtin_sets_its_params_and_marks_the_panel_dirty() {
+        let mut state = FaceReshapeState::default();
+        assert!(state.apply_builtin("vLine"));
+        assert_eq!(state.last_preset, "builtin:vLine");
+        assert_eq!(state.preset_label(), "V-Line");
+        assert_eq!(state.params.get("jaw_angle"), Some(18.0));
+        assert_eq!(state.params.get("face_slim"), Some(25.0));
+        assert!(state.dirty);
+        assert!(!state.apply_builtin("missing"));
+    }
+
+    #[test]
+    fn face_mode_and_selection_choose_the_engine_faces_value() {
+        let mut state = FaceReshapeState::default();
+        assert_eq!(state.faces_value(), json!("main"));
+        state.face_mode = FaceMode::All;
+        assert_eq!(state.faces_value(), json!("all"));
+        state.set_detected_faces(3);
+        state.face_mode = FaceMode::Selected;
+        state.selected_faces.clear();
+        assert_eq!(state.faces_value(), json!("main"), "an empty selection falls back to Main");
+        state.selected_faces = vec![2, 3, 2];
+        state.ensure();
+        assert_eq!(state.faces_value(), json!([2, 3]));
+        state.params.set("jaw_width", 20.0);
+        assert_eq!(preview_payload(&state, None)["faces"], json!([2, 3]), "preview carries the selection");
+        state.face_mode = FaceMode::All;
+        assert_eq!(apply_payload(&state)["faces"], json!("all"), "apply carries the choice");
+        state.face_mode = FaceMode::Selected;
+        state.toggle_face(2, 3);
+        assert_eq!(state.selected_faces, vec![3]);
+        state.toggle_face(3, 3);
+        assert_eq!(state.selected_faces, vec![3], "the last checked face stays");
+        state.toggle_face(1, 3);
+        assert_eq!(state.selected_faces, vec![1, 3]);
+        state.set_detected_faces(1);
+        assert_eq!(state.face_mode, FaceMode::Main);
+        assert!(state.selected_faces.is_empty());
+        assert_eq!(state.faces_value(), json!("main"));
+    }
+
+    #[test]
+    fn checkboxes_appear_for_multiple_detected_faces_and_toggle_the_selection() {
+        let mut h = draw(document_app(), vec2(1000.0, 900.0), 0.25);
+        let state = &mut h.state_mut().ui.face_reshape;
+        state.detected_faces = 3;
+        state.face_mode = FaceMode::Selected;
+        state.selected_faces = vec![1, 2, 3];
+        h.run_steps(3);
+        for n in 1..=3 {
+            assert!(h.query_by_label(&format!("Face {n}")).is_some(), "face {n} checkbox");
+        }
+        h.get_by_label("Face 2").click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.face_reshape.selected_faces, vec![1, 3], "clicking a box toggles that face");
+    }
+
+    #[test]
+    fn menu_toggles_the_panel_and_apply_runs_the_panel_payload() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let value = crate::menus::invoke(&mut app, &ctx, "window.toggle.faceReshape", json!({})).expect("toggle");
+        assert_eq!(value["open"], true);
+        assert!(app.ui.panels.face_reshape);
+        let value = crate::menus::invoke(&mut app, &ctx, "window.toggle.faceReshape", json!({})).expect("toggle");
+        assert_eq!(value["open"], false);
+        assert!(!app.ui.panels.face_reshape);
+        assert!(menu(&mut app, "faceReshape.missing").is_none());
+
+        // Apply opens the panel and runs the same payload the button sends. A blank document
+        // has no face, so the panel reports the engine error rather than doing nothing.
+        let mut app = document_app();
+        app.ui.panels.face_reshape = false;
+        app.ui.face_reshape.params.set("jaw_width", 20.0);
+        let value = crate::menus::invoke(&mut app, &ctx, "faceReshape.apply", json!({})).expect("apply");
+        assert_eq!(value["action"], "apply");
+        assert!(app.ui.panels.face_reshape);
+        assert!(app.ui.face_reshape.status_error, "{}", app.ui.face_reshape.status);
+        assert!(app.ui.face_reshape.status.contains("no face"), "{}", app.ui.face_reshape.status);
+    }
+
+    #[test]
+    fn shortcuts_are_listed_bound_and_conflict_free() {
+        let app = app();
+        let items = crate::prefs_ui::shortcut_items(&app);
+        let table = crate::shortcut_dispatch::bindings(&app);
+        for (id, key, path) in
+            [("window.toggle.faceReshape", "Alt+Shift+M", &["Window"][..]), ("faceReshape.apply", "Face Reshape: Apply", &["Window", "Face Reshape"][..])]
+        {
+            if id == "faceReshape.apply" {
+                assert_eq!(crate::shortcuts::default_shortcut(id).as_deref(), Some("Alt+Shift+D"), "{id} default");
+            } else {
+                assert_eq!(crate::shortcuts::default_shortcut(id).as_deref(), Some(key), "{id} default");
+            }
+            let item = items.iter().find(|item| item.0 == id).unwrap_or_else(|| panic!("{id} is listed"));
+            assert_eq!(item.2, path.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>(), "{id} groups under its panel");
+            let parsed =
+                crate::shortcuts::parse(if id == "faceReshape.apply" { "Alt+Shift+D" } else { key }).unwrap_or_else(|| panic!("{id}: unparsable default"));
+            assert!(table.iter().any(|(bound, sc)| bound == id && *sc == parsed), "{id} is bound");
+        }
+        // The unsafe keys stay with what already owns them.
+        assert_eq!(crate::shortcuts::default_shortcut("basicColor.scanFaces").as_deref(), Some("Alt+Shift+F"));
+        assert_ne!(crate::shortcuts::default_shortcut("window.toggle.faceReshape").as_deref(), Some("Alt+F"));
+        let all = crate::menus::UI_COMMANDS
+            .iter()
+            .filter_map(|(id, _, _, sc)| sc.map(|s| (*id, s)))
+            .chain(photocraft_engine::command_specs().iter().filter_map(|c| c.shortcut.map(|s| (c.id, s))));
+        let conflicts = photocraft_engine::prefs::conflicts(all);
+        assert!(conflicts.is_empty(), "the defaults conflict with nothing: {conflicts:?}");
+    }
+
+    /// Alt+Shift+M through the whole app: the shortcut opens the panel, the title is there and
+    /// the six groups hold all 68 sliders. (Alt+F opens File, so the documented safe key is used.)
+    #[test]
+    fn shortcut_opens_the_panel_with_the_title_and_sixty_eight_sliders() {
+        let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, crate::theme::ThemeKind::ALL[0]);
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width": 128, "height": 128})).expect("new document");
+            app
+        });
+        h.run_steps(8);
+        assert!(!h.state().ui.panels.face_reshape);
+        let sc = crate::shortcuts::parse("Alt+Shift+M").expect("parsable");
+        let m = egui::Modifiers { alt: true, shift: true, ..Default::default() };
+        h.event(egui::Event::ModifiersChanged(m));
+        h.event(egui::Event::Key { key: sc.logical_key, physical_key: None, pressed: true, repeat: false, modifiers: m });
+        h.event(egui::Event::Key { key: sc.logical_key, physical_key: None, pressed: false, repeat: false, modifiers: m });
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        h.run_steps(4);
+        assert!(h.state().ui.panels.face_reshape, "the shortcut opens the window");
+        assert!(h.query_all_by_label(entry_label()).next().is_some(), "the title is shown");
+        let mut total = 0;
+        for (index, keys) in GROUPS.iter().enumerate() {
+            h.state_mut().ui.face_reshape.active_group = index;
+            h.run_steps(3);
+            let shown = h.query_all_by_role(egui::accesskit::Role::Slider).count();
+            assert_eq!(shown, keys.len(), "group {index} shows its sliders");
+            total += shown;
+        }
+        assert_eq!(total, 68, "all 68 sliders are reachable");
     }
 }

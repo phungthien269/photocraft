@@ -3285,3 +3285,6 @@ curves	Smooth	Lisser
 	Select a Basic Color layer first.	Sélectionnez d'abord un calque Basic Color.
 	Selection overlay shown.	Superposition de sélection affichée.
 	Selection overlay hidden.	Superposition de sélection masquée.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Remodelage du visage
+	Face Reshape: Apply	Remodelage du visage : Appliquer

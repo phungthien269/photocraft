@@ -4067,3 +4067,6 @@ layerLabel	No Color	Sem cor
 	Select a Basic Color layer first.	Selecione primeiro uma camada Basic Color.
 	Selection overlay shown.	Sobreposição de seleção exibida.
 	Selection overlay hidden.	Sobreposição de seleção oculta.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Remodelar Rosto
+	Face Reshape: Apply	Remodelar Rosto: Aplicar

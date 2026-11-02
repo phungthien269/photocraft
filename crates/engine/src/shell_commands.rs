@@ -89,6 +89,11 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("colorPresets.runBatch", "Color Presets: Run Batch", &["Window", "Color Presets"], Some("Alt+Shift+R")),
     ("window.toggle.basicColor", "Basic Color", &["Window"], Some("Alt+B")),
     ("window.toggle.colorPresets", "Color Presets", &["Window"], Some("Alt+P")),
+    // Face Reshape: Alt+F is the File menu's mnemonic (the menu bar consumes it) and Alt+Shift+F
+    // is Basic Color: Scan Faces, so the safe defaults are Alt+Shift+M (open) and Alt+Shift+D
+    // (apply).
+    ("window.toggle.faceReshape", "Face Reshape", &["Window"], Some("Alt+Shift+M")),
+    ("faceReshape.apply", "Face Reshape: Apply", &["Window", "Face Reshape"], Some("Alt+Shift+D")),
     ("window.toggle.navigator", "Navigator", &["Window"], None),
     ("window.toggle.toolbar", "Tools", &["Window"], None),
     // Photoshop's Tab and ⇧Tab: all panels (Tools, options bar and the dock), or only the dock.
@@ -236,6 +241,8 @@ mod tests {
             ("colorPresets.save", "Color Presets: Save Current Look", &["Window", "Color Presets"][..], "Alt+Shift+V"),
             ("colorPresets.apply", "Color Presets: Apply Selected Preset", &["Window", "Color Presets"][..], "Alt+Shift+Enter"),
             ("colorPresets.runBatch", "Color Presets: Run Batch", &["Window", "Color Presets"][..], "Alt+Shift+R"),
+            ("window.toggle.faceReshape", "Face Reshape", &["Window"][..], "Alt+Shift+M"),
+            ("faceReshape.apply", "Face Reshape: Apply", &["Window", "Face Reshape"][..], "Alt+Shift+D"),
         ] {
             let command = find(id);
             assert_eq!(command.1, label, "{id} label");

@@ -4350,3 +4350,6 @@ shape	Appearance	Izgled
 	Select a Basic Color layer first.	Prvo izaberite sloj Basic Color.
 	Selection overlay shown.	Overlaj izbora je prikazan.
 	Selection overlay hidden.	Overlaj izbora je sakriven.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Preoblikovanje lica
+	Face Reshape: Apply	Preoblikovanje lica: Primeni

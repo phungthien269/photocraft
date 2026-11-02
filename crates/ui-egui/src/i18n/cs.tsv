@@ -3885,3 +3885,6 @@ navigator	Zoom	Zvětšení
 	Select a Basic Color layer first.	Nejprve vyberte vrstvu Basic Color.
 	Selection overlay shown.	Překryv výběru je zobrazen.
 	Selection overlay hidden.	Překryv výběru je skryt.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Přetvarování obličeje
+	Face Reshape: Apply	Přetvarování obličeje: Použít

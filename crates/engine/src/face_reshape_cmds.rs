@@ -37,8 +37,10 @@
 //! 24 MP document never copies or resamples the whole canvas.
 //!
 //! Detection runs on a reduced, source-only composite (long side 1600 px), then the landmark
-//! model runs on a full-resolution crop around the detected box. On the browser build neither
-//! model exists, so the command is disabled with the same message as `retouchAI.faceLandmarks`.
+//! model runs on a full-resolution crop around each selected box. `faces` picks the main face
+//! (the default), every detected face, or a set of 1-based faces in the detector's order; all of
+//! them are warped into the same preview/final layer. On the browser build neither model exists,
+//! so the command is disabled with the same message as `retouchAI.faceLandmarks`.
 
 use std::sync::OnceLock;
 
@@ -1078,24 +1080,112 @@ struct FaceInput {
     points: Vec<[f32; 3]>,
 }
 
+/// Which detected faces `retouchAI.faceReshape` warps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FaceSelection {
+    /// The best face (the detector's first).
+    Main,
+    /// Every detected face.
+    All,
+    /// Several 1-based faces in the detector's (best-first) order, unique and sorted.
+    Selected(Vec<usize>),
+}
+
+impl FaceSelection {
+    fn parse(p: &Value) -> Result<Self> {
+        let bad_faces = || bad("`faces` must be \"main\", \"all\", a 1-based face number or a non-empty array of face numbers");
+        let one = |v: &Value| -> Option<usize> {
+            match v {
+                Value::Number(n) => n.as_u64().filter(|n| *n >= 1).map(|n| n as usize),
+                Value::String(s) => s.parse::<usize>().ok().filter(|n| *n >= 1),
+                _ => None,
+            }
+        };
+        match p.get("faces") {
+            None | Some(Value::Null) => Ok(Self::Main),
+            Some(Value::String(s)) if s == "main" => Ok(Self::Main),
+            Some(Value::String(s)) if s == "all" => Ok(Self::All),
+            Some(v @ (Value::Number(_) | Value::String(_))) => one(v).map(|n| Self::Selected(vec![n])).ok_or_else(bad_faces),
+            Some(Value::Array(items)) => {
+                if items.is_empty() {
+                    return Err(bad("`faces` must name at least one face"));
+                }
+                let mut selected = Vec::with_capacity(items.len());
+                for item in items {
+                    selected.push(one(item).ok_or_else(bad_faces)?);
+                }
+                selected.sort_unstable();
+                selected.dedup();
+                Ok(Self::Selected(selected))
+            }
+            Some(_) => Err(bad_faces()),
+        }
+    }
+
+    /// 0-based indices into `count` detected faces; out-of-range numbers are clear errors.
+    fn indices(&self, count: usize) -> Result<Vec<usize>> {
+        match self {
+            Self::Main => {
+                if count == 0 {
+                    return Err(bad("no face was detected"));
+                }
+                Ok(vec![0])
+            }
+            Self::All => Ok((0..count).collect()),
+            Self::Selected(faces) => {
+                for n in faces {
+                    if *n > count {
+                        return Err(bad(format!("face {n} was not found; the detector found {count}")));
+                    }
+                }
+                Ok(faces.iter().map(|n| n - 1).collect())
+            }
+        }
+    }
+
+    /// 1-based indices in detector order, for the result payload.
+    fn selected_numbers(&self, count: usize) -> Vec<usize> {
+        self.indices(count).map(|indices| indices.into_iter().map(|i| i + 1).collect()).unwrap_or_default()
+    }
+
+    fn id(&self) -> String {
+        match self {
+            Self::Main => "main".into(),
+            Self::All => "all".into(),
+            Self::Selected(faces) => faces.iter().map(usize::to_string).collect::<Vec<_>>().join(","),
+        }
+    }
+}
+
+/// The selected faces with their landmarks, plus how many faces the detector found in total.
+struct FaceInputs {
+    selected: Vec<FaceInput>,
+    detected: usize,
+}
+
 #[cfg(test)]
 thread_local! {
-    static TEST_FACE: std::cell::RefCell<Option<FaceInput>> = const { std::cell::RefCell::new(None) };
+    static TEST_FACES: std::cell::RefCell<Option<Vec<FaceInput>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_faces(faces: Vec<FaceInput>) {
+    TEST_FACES.with(|cell| *cell.borrow_mut() = Some(faces));
 }
 
 #[cfg(test)]
 fn inject_face(face: FaceInput) {
-    TEST_FACE.with(|cell| *cell.borrow_mut() = Some(face));
+    inject_faces(vec![face]);
 }
 
 #[cfg(test)]
 fn clear_injected_face() {
-    TEST_FACE.with(|cell| *cell.borrow_mut() = None);
+    TEST_FACES.with(|cell| *cell.borrow_mut() = None);
 }
 
 #[cfg(test)]
-fn injected_face() -> Option<FaceInput> {
-    TEST_FACE.with(|cell| cell.borrow().clone())
+fn injected_faces() -> Option<Vec<FaceInput>> {
+    TEST_FACES.with(|cell| cell.borrow().clone())
 }
 
 fn analysis_size(canvas: Rect) -> (usize, usize) {
@@ -1152,9 +1242,9 @@ fn face_region(face: Rect, canvas: Rect) -> Rect {
     Rect::new(x0, y0, x1, y1).intersect(&canvas)
 }
 
-/// Detect the main face on a reduced, source-only render, then run the landmark model on a
-/// full-resolution crop around it. Returns document coordinates.
-fn detect_face(doc: &Document, source: LayerId) -> Result<FaceInput> {
+/// Detect every face on a reduced, source-only render. The boxes stay in document pixels; the
+/// (more expensive) landmark model runs only for the faces the caller selects.
+fn detect_face_boxes(doc: &Document, source: LayerId) -> Result<Vec<Rect>> {
     if !faces::AVAILABLE {
         return Err(EngineError::Other("face detection isn't available in the browser version of PhotoCraft; use the desktop app".into()));
     }
@@ -1166,7 +1256,10 @@ fn detect_face(doc: &Document, source: LayerId) -> Result<FaceInput> {
         return Err(bad("the document has no pixels"));
     }
     let layer = doc.layer(source).ok_or(EngineError::NoLayer(source))?;
-    let surface = layer.surface().ok_or_else(|| bad(format!("layer \"{}\" has no pixels", layer.name)))?;
+    if layer.surface().is_none() {
+        return Err(bad(format!("layer \"{}\" has no pixels", layer.name)));
+    }
+    let layer_name = layer.name.clone();
     let (aw, ah) = analysis_size(canvas);
     let proxy = source_only_document(doc, source);
     let buffer = photocraft_compose::render_reduced(&proxy, aw as u32, ah as u32);
@@ -1174,13 +1267,28 @@ fn detect_face(doc: &Document, source: LayerId) -> Result<FaceInput> {
         return Err(EngineError::Other("the reduced face-detection image has an unexpected size".into()));
     }
     let found = faces::detect(&buffer.px, aw, ah, MIN_SCORE).ok_or_else(|| EngineError::Other("face detection failed".into()))?;
-    let main = found.first().ok_or_else(|| bad(format!("no face was found in layer \"{}\"; Face Reshape needs a visible face", layer.name)))?;
+    if found.is_empty() {
+        return Err(bad(format!("no face was found in layer \"{layer_name}\"; Face Reshape needs a visible face")));
+    }
     let sx = canvas.width() as f32 / aw as f32;
     let sy = canvas.height() as f32 / ah as f32;
-    let rect = rect_from_face([canvas.x0 as f32 + main.rect[0] * sx, canvas.y0 as f32 + main.rect[1] * sy, main.rect[2] * sx, main.rect[3] * sy], canvas);
-    if rect.is_empty() {
-        return Err(bad("the detected face does not overlap the document"));
+    let boxes: Vec<Rect> = found
+        .iter()
+        .map(|face| rect_from_face([canvas.x0 as f32 + face.rect[0] * sx, canvas.y0 as f32 + face.rect[1] * sy, face.rect[2] * sx, face.rect[3] * sy], canvas))
+        .filter(|rect| !rect.is_empty())
+        .collect();
+    if boxes.is_empty() {
+        return Err(bad("the detected faces do not overlap the document"));
     }
+    Ok(boxes)
+}
+
+/// Run the 478-point landmark model on a full-resolution crop around one detected box. Coordinates
+/// are document pixels.
+fn landmarks_for(doc: &Document, source: LayerId, rect: Rect) -> Result<FaceInput> {
+    let canvas = doc.bounds();
+    let layer = doc.layer(source).ok_or(EngineError::NoLayer(source))?;
+    let surface = layer.surface().ok_or_else(|| bad(format!("layer \"{}\" has no pixels", layer.name)))?;
     // CROP_PADDING in the landmark model is 1.5x the box's longest side; 1.6x here leaves a
     // margin so the model's own crop never touches the buffer edge.
     let side = rect.width().max(rect.height()) as f32;
@@ -1208,13 +1316,23 @@ fn detect_face(doc: &Document, source: LayerId) -> Result<FaceInput> {
     Ok(FaceInput { rect, points })
 }
 
-fn face_input(s: &Session, source: LayerId) -> Result<FaceInput> {
+fn face_inputs(s: &Session, source: LayerId, selection: &FaceSelection) -> Result<FaceInputs> {
     #[cfg(test)]
-    if let Some(face) = injected_face() {
-        return Ok(face);
+    if let Some(faces) = injected_faces() {
+        let detected = faces.len();
+        let indices = selection.indices(detected)?;
+        let selected = indices.into_iter().filter_map(|i| faces.get(i).cloned()).collect();
+        return Ok(FaceInputs { selected, detected });
     }
     let doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
-    detect_face(&doc, source)
+    let boxes = detect_face_boxes(&doc, source)?;
+    let detected = boxes.len();
+    let indices = selection.indices(detected)?;
+    let selected = indices
+        .into_iter()
+        .map(|i| boxes.get(i).copied().ok_or_else(|| bad(format!("face {} was not found", i + 1))).and_then(|rect| landmarks_for(&doc, source, rect)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(FaceInputs { selected, detected })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1316,6 +1434,9 @@ fn result(layer: Option<LayerId>, name: &str, preview: bool, compare: bool, face
         "preview": preview,
         "compare": compare,
         "face": face,
+        "faces": [],
+        "detected": 0,
+        "selected": [],
         "points": face_mesh::POINTS,
         "changed": changed,
     })
@@ -1391,6 +1512,7 @@ fn face_reshape_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(answer) = preview_only(s, p, reset, compare, has_params)? {
         return Ok(answer);
     }
+    let selection = FaceSelection::parse(p)?;
     let source = source_layer(s, p)?;
     let doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
     let layer = doc.layer(source).ok_or(EngineError::NoLayer(source))?;
@@ -1418,21 +1540,41 @@ fn face_reshape_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(result(None, "", false, compare, [0.0, 0.0, 0.0, 0.0], changed));
     }
 
-    let input = face_input(s, source)?;
-    let face = input.rect;
-    let mut geometry = Geometry::from_landmarks(&input.points, face).map_err(bad)?;
-    geometry.apply(&params);
-    let canvas = doc.bounds();
-    let region = face_region(face, canvas);
-    if region.is_empty() {
-        return Err(bad("the face is outside the document"));
+    let input = face_inputs(s, source, &selection)?;
+    if input.selected.is_empty() {
+        return Err(bad("no face was selected"));
     }
-    let grid = DisplacementGrid::build(region, &geometry);
+    let detected = input.detected;
+    let selected_numbers = selection.selected_numbers(detected);
+    let face = input.selected[0].rect;
+    let canvas = doc.bounds();
+    let source_surface = layer.surface().ok_or_else(|| bad(format!("layer \"{}\" has no pixels", layer.name)))?;
+    let mut grids = Vec::with_capacity(input.selected.len());
+    let mut face_boxes = Vec::with_capacity(input.selected.len());
+    let mut region = Rect::EMPTY;
+    for input in &input.selected {
+        let face = input.rect;
+        let mut geometry = Geometry::from_landmarks(&input.points, face).map_err(bad)?;
+        geometry.apply(&params);
+        let face_region = face_region(face, canvas);
+        if face_region.is_empty() {
+            return Err(bad("the face is outside the document"));
+        }
+        grids.push(DisplacementGrid::build(face_region, &geometry));
+        region = region.union(&face_region);
+        face_boxes.push(face);
+    }
+    // One warp over the union of the faces' regions: a single layer, no tile seams where two
+    // padded regions share a tile. Displacements from every face grid add where regions overlap.
     let map = |x: f64, y: f64| {
-        let (dx, dy) = grid.at(x, y);
+        let (mut dx, mut dy) = (0.0, 0.0);
+        for grid in &grids {
+            let (gx, gy) = grid.at(x, y);
+            dx += gx;
+            dy += gy;
+        }
         (x + dx, y + dy)
     };
-    let source_surface = layer.surface().ok_or_else(|| bad(format!("layer \"{}\" has no pixels", layer.name)))?;
     let warped = warp_mesh_surface(source_surface, region, &map, Interp::Bicubic);
     if warped.content_bounds().is_empty() {
         return Err(bad("the face region has no pixels to reshape"));
@@ -1456,7 +1598,12 @@ fn face_reshape_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(id)
     })?;
     let face = face_box_json(face);
-    Ok(result(Some(id), target_name, preview, compare, face, true))
+    let mut out = result(Some(id), target_name, preview, compare, face, true);
+    out["faces"] = json!(face_boxes.iter().map(|face| face_box_json(*face)).collect::<Vec<_>>());
+    out["detected"] = json!(detected);
+    out["selected"] = json!(selected_numbers);
+    out["faceMode"] = json!(selection.id());
+    Ok(out)
 }
 
 fn has_face_source(s: &Session) -> std::result::Result<(), String> {
@@ -1478,7 +1625,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Face Reshape",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (pixel source; default active layer),"params":{"head_scale": -100..100=0,"cranium_height": -100..100=0,"hair_volume": -100..100=0,"hairline_shift": -100..100=0,"face_slim": -100..100=0,"face_width": -100..100=0,"face_length": -100..100=0,"jaw_width": -100..100=0,"jaw_angle": -100..100=0,"cheekbone_shrink": -100..100=0,"cheek_slim": -100..100=0,"temple_fill": -100..100=0,"chin_length": -100..100=0,"chin_width": -100..100=0,"chin_protrusion": -100..100=0,"chin_cleft": -100..100=0,"double_chin_warp": -100..100=0,"eye_size": -100..100=0,"eye_width": -100..100=0,"eye_height": -100..100=0,"eye_distance": -100..100=0,"eye_tilt": -100..100=0,"eye_position_y": -100..100=0,"inner_canthus": -100..100=0,"outer_canthus": -100..100=0,"lower_eyelid_down": -100..100=0,"pupil_scale": -100..100=0,"aegyo_sal": -100..100=0,"eye_brow_distance": -100..100=0,"eyelid_fold_width": -100..100=0,"eyebrow_height": -100..100=0,"eyebrow_distance": -100..100=0,"eyebrow_length": -100..100=0,"eyebrow_thickness": -100..100=0,"eyebrow_arch": -100..100=0,"eyebrow_tail": -100..100=0,"eyebrow_tilt": -100..100=0,"nose_scale": -100..100=0,"nose_wing_width": -100..100=0,"nose_tip_size": -100..100=0,"nose_tip_angle": -100..100=0,"nose_length": -100..100=0,"bridge_width": -100..100=0,"bridge_curvature": -100..100=0,"nasal_hump_reduction": -100..100=0,"columella_height": -100..100=0,"radix_height": -100..100=0,"nostril_size": -100..100=0,"mouth_scale": -100..100=0,"mouth_width": -100..100=0,"mouth_position_y": -100..100=0,"philtrum_length": -100..100=0,"upper_lip_thickness": -100..100=0,"lower_lip_thickness": -100..100=0,"smile_corners": -100..100=0,"m_lip_shape": -100..100=0,"lip_plumpness": -100..100=0,"lip_protrusion": -100..100=0,"lower_lip_to_chin": -100..100=0,"teeth_align": -100..100=0,"three_section_ratio": -100..100=0,"face_symmetry": -100..100=0,"eye_symmetry": -100..100=0,"eyebrow_symmetry": -100..100=0,"neck_slim": -100..100=0,"neck_length": -100..100=0,"e_line_adjustment": -100..100=0,"midface_projection": -100..100=0},"preview":bool=true,"previewLayer":id?,"compare":bool=false,"reset":bool=false} → {"layer":id?,"name":str,"preview":bool,"compare":bool,"face":[x,y,w,h],"points":478,"changed":bool} (non-destructive: source pixels and history stay intact; preview:true makes a "Face Reshape Preview" layer above the source, preview:false renames/creates "Face Reshape", compare hides/shows the preview, reset removes it; pass the same "coalesce" key from a slider drag for one history step)"##,
+        params: r##"{"layer":id? (pixel source; default active layer),"params":{"head_scale": -100..100=0,"cranium_height": -100..100=0,"hair_volume": -100..100=0,"hairline_shift": -100..100=0,"face_slim": -100..100=0,"face_width": -100..100=0,"face_length": -100..100=0,"jaw_width": -100..100=0,"jaw_angle": -100..100=0,"cheekbone_shrink": -100..100=0,"cheek_slim": -100..100=0,"temple_fill": -100..100=0,"chin_length": -100..100=0,"chin_width": -100..100=0,"chin_protrusion": -100..100=0,"chin_cleft": -100..100=0,"double_chin_warp": -100..100=0,"eye_size": -100..100=0,"eye_width": -100..100=0,"eye_height": -100..100=0,"eye_distance": -100..100=0,"eye_tilt": -100..100=0,"eye_position_y": -100..100=0,"inner_canthus": -100..100=0,"outer_canthus": -100..100=0,"lower_eyelid_down": -100..100=0,"pupil_scale": -100..100=0,"aegyo_sal": -100..100=0,"eye_brow_distance": -100..100=0,"eyelid_fold_width": -100..100=0,"eyebrow_height": -100..100=0,"eyebrow_distance": -100..100=0,"eyebrow_length": -100..100=0,"eyebrow_thickness": -100..100=0,"eyebrow_arch": -100..100=0,"eyebrow_tail": -100..100=0,"eyebrow_tilt": -100..100=0,"nose_scale": -100..100=0,"nose_wing_width": -100..100=0,"nose_tip_size": -100..100=0,"nose_tip_angle": -100..100=0,"nose_length": -100..100=0,"bridge_width": -100..100=0,"bridge_curvature": -100..100=0,"nasal_hump_reduction": -100..100=0,"columella_height": -100..100=0,"radix_height": -100..100=0,"nostril_size": -100..100=0,"mouth_scale": -100..100=0,"mouth_width": -100..100=0,"mouth_position_y": -100..100=0,"philtrum_length": -100..100=0,"upper_lip_thickness": -100..100=0,"lower_lip_thickness": -100..100=0,"smile_corners": -100..100=0,"m_lip_shape": -100..100=0,"lip_plumpness": -100..100=0,"lip_protrusion": -100..100=0,"lower_lip_to_chin": -100..100=0,"teeth_align": -100..100=0,"three_section_ratio": -100..100=0,"face_symmetry": -100..100=0,"eye_symmetry": -100..100=0,"eyebrow_symmetry": -100..100=0,"neck_slim": -100..100=0,"neck_length": -100..100=0,"e_line_adjustment": -100..100=0,"midface_projection": -100..100=0},"faces":"main"|"all"|n|[n,…]="main","preview":bool=true,"previewLayer":id?,"compare":bool=false,"reset":bool=false} → {"layer":id?,"name":str,"preview":bool,"compare":bool,"face":[x,y,w,h],"faces":[[x,y,w,h],…],"detected":n,"selected":[n,…],"faceMode":str,"points":478,"changed":bool} (non-destructive: source pixels and history stay intact; preview:true makes a "Face Reshape Preview" layer above the source, preview:false renames/creates "Face Reshape", compare hides/shows the preview, reset removes it; pass the same "coalesce" key from a slider drag for one history step; `faces` arrays are 1-based in the detector's best-first order and all selected faces land in one layer)"##,
         enabled: has_face_source,
         run: face_reshape_cmd,
         journal: true,
@@ -1606,11 +1753,66 @@ mod tests {
         .clone()
     }
 
+    /// Two faces in detector order: the first at x 38, the second shifted 200 px right (far
+    /// enough apart that their padded warp regions do not overlap).
+    fn test_faces() -> Vec<FaceInput> {
+        let first = test_face();
+        let mut second = first.clone();
+        second.rect = first.rect.translate(200, 0);
+        for point in &mut second.points {
+            point[0] += 200.0;
+        }
+        vec![first, second]
+    }
+
+    fn session_with_two_faces() -> Session {
+        let size = Size::new(384, 192);
+        let mut doc = Document::with_background("Two Face Reshape test", size, ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        let rgba = synthetic_rgba(384, 192);
+        let fmt = doc.pixel_format();
+        let bounds = doc.bounds();
+        let ch = fmt.channels();
+        let mut native = vec![0.0f32; rgba.len() * ch];
+        let mut tmp = [0.0f32; 4];
+        for (i, p) in rgba.iter().enumerate() {
+            let _ = photocraft_raster::from_rgba_into(&fmt, *p, &mut tmp);
+            native[i * ch..(i + 1) * ch].copy_from_slice(&tmp[..ch]);
+        }
+        if let Some(surface) = doc.layers[0].surface_mut() {
+            surface.write_region(bounds, &native);
+        }
+        let mut s = Session::new();
+        s.add_document(doc, None);
+        s
+    }
+
     fn execute_with_face(s: &mut Session, p: Value) -> Result<Value> {
         inject_face(test_face());
         let r = s.execute(CMD, p);
         clear_injected_face();
         r
+    }
+
+    fn execute_with_faces(s: &mut Session, p: Value) -> Result<Value> {
+        inject_faces(test_faces());
+        let r = s.execute(CMD, p);
+        clear_injected_face();
+        r
+    }
+
+    fn region_changed(a: &[[f32; 4]], b: &[[f32; 4]], w: usize, region: Rect) -> bool {
+        for y in region.y0.max(0)..region.y1.max(0) {
+            for x in region.x0.max(0)..region.x1.max(0) {
+                let i = y as usize * w + x as usize;
+                if let (Some(p), Some(q)) = (a.get(i), b.get(i))
+                    && q[3] > 0.5
+                    && p.iter().zip(q).any(|(x, y)| (x - y).abs() > 1e-6)
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn diff_bbox(a: &[[f32; 4]], b: &[[f32; 4]], w: usize) -> Rect {
@@ -2000,11 +2202,90 @@ mod tests {
     }
 
     #[test]
+    fn multi_face_selection_warps_only_the_chosen_faces_into_one_layer() {
+        let faces = test_faces();
+        let canvas = Rect::new(0, 0, 384, 192);
+        let first = face_region(faces[0].rect, canvas);
+        let second = face_region(faces[1].rect, canvas);
+        assert!(first.x1 <= second.x0, "the test faces need disjoint regions: {first:?} {second:?}");
+
+        // Default ("main") warps only the first (best) face and reports both detected.
+        let mut s = session_with_two_faces();
+        let source = source_id(&s);
+        let before = pixels(&s, source);
+        let r = execute_with_faces(&mut s, json!({"params": {"jaw_width": 60}})).unwrap();
+        assert_eq!(r["detected"], 2);
+        assert_eq!(r["selected"], json!([1]));
+        assert_eq!(r["faceMode"], "main");
+        assert_eq!(r["faces"].as_array().map(Vec::len), Some(1));
+        let id = LayerId(r["layer"].as_u64().unwrap());
+        let after = pixels(&s, id);
+        assert!(region_changed(&before, &after, 384, first), "the main face changed");
+        assert!(!region_changed(&before, &after, 384, second), "the second face is untouched");
+        assert_eq!(pixels(&s, source), before, "the source layer is untouched");
+        assert_eq!(names(&s).iter().filter(|n| *n == PREVIEW_NAME).count(), 1, "one preview layer");
+
+        // A single 1-based index addresses the detector's second face.
+        let mut s = session_with_two_faces();
+        let source = source_id(&s);
+        let before = pixels(&s, source);
+        let r = execute_with_faces(&mut s, json!({"params": {"jaw_width": 60}, "faces": [2]})).unwrap();
+        assert_eq!(r["selected"], json!([2]));
+        assert_eq!(r["faceMode"], "2");
+        let id = LayerId(r["layer"].as_u64().unwrap());
+        let after = pixels(&s, id);
+        assert!(!region_changed(&before, &after, 384, first), "face 1 is untouched");
+        assert!(region_changed(&before, &after, 384, second), "face 2 changed");
+        assert_eq!(pixels(&s, source), before);
+
+        // "all" and an explicit [1, 2] warp both faces in the same layer.
+        for value in [json!("all"), json!([1, 2])] {
+            let mut s = session_with_two_faces();
+            let source = source_id(&s);
+            let before = pixels(&s, source);
+            let r = execute_with_faces(&mut s, json!({"params": {"jaw_width": 60}, "faces": value})).unwrap();
+            assert_eq!(r["detected"], 2, "{value}");
+            assert_eq!(r["selected"], json!([1, 2]), "{value}");
+            assert_eq!(r["faces"].as_array().map(Vec::len), Some(2), "{value}");
+            let id = LayerId(r["layer"].as_u64().unwrap());
+            let after = pixels(&s, id);
+            assert!(region_changed(&before, &after, 384, first), "{value}: face 1 changed");
+            assert!(region_changed(&before, &after, 384, second), "{value}: face 2 changed");
+            assert_eq!(pixels(&s, source), before, "{value}: source untouched");
+            assert_eq!(names(&s).iter().filter(|n| *n == PREVIEW_NAME).count(), 1, "{value}: one preview layer");
+        }
+    }
+
+    #[test]
+    fn bad_face_choices_are_clear_errors_and_change_nothing() {
+        let mut s = session_with_two_faces();
+        let before = names(&s);
+        for (value, expected) in [
+            (json!([3]), "face 3 was not found; the detector found 2"),
+            (json!([]), "at least one face"),
+            (json!([0]), "1-based"),
+            (json!([-1]), "1-based"),
+            (json!([1.5]), "1-based"),
+            (json!(["x"]), "1-based"),
+            (json!({}), "`faces` must be"),
+        ] {
+            let err = execute_with_faces(&mut s, json!({"params": {"jaw_width": 20}, "faces": value})).unwrap_err().to_string();
+            assert!(err.contains(expected), "{value}: {err}");
+            assert_eq!(names(&s), before, "{value} changed the layers");
+        }
+        assert_eq!(execute_with_faces(&mut s, json!({"faces": "main", "params": {}})).unwrap()["changed"], false);
+    }
+
+    #[test]
     fn no_face_is_a_clear_error_and_changes_nothing() {
         let mut s = blank_session();
         let before = names(&s);
-        let err = s.execute(CMD, json!({"params": {"head_scale": 20}})).unwrap_err().to_string();
-        assert!(err.contains("no face"), "{err}");
-        assert_eq!(names(&s), before);
+        for params in
+            [json!({"params": {"head_scale": 20}}), json!({"params": {"head_scale": 20}, "faces": "all"}), json!({"params": {"head_scale": 20}, "faces": [1]})]
+        {
+            let err = s.execute(CMD, params).unwrap_err().to_string();
+            assert!(err.contains("no face"), "{err}");
+            assert_eq!(names(&s), before);
+        }
     }
 }

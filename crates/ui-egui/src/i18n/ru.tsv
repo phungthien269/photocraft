@@ -3251,3 +3251,6 @@ curves	Smooth	Сгладить
 	Select a Basic Color layer first.	Сначала выберите слой Basic Color.
 	Selection overlay shown.	Наложение выделения показано.
 	Selection overlay hidden.	Наложение выделения скрыто.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Изменение формы лица
+	Face Reshape: Apply	Изменение формы лица: Применить

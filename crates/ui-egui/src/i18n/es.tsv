@@ -4239,3 +4239,6 @@ navigator	Zoom	Zoom
 	Select a Basic Color layer first.	Selecciona primero una capa de Basic Color.
 	Selection overlay shown.	Superposición de selección mostrada.
 	Selection overlay hidden.	Superposición de selección oculta.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Remodelar rostro
+	Face Reshape: Apply	Remodelar rostro: Aplicar

@@ -2886,3 +2886,6 @@ curves	Smooth	平滑
 	Select a Basic Color layer first.	請先選取一個 Basic Color 圖層。
 	Selection overlay shown.	已顯示選取範圍疊加層。
 	Selection overlay hidden.	已隱藏選取範圍疊加層。
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	面部重塑
+	Face Reshape: Apply	面部重塑：套用

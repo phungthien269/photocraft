@@ -110,6 +110,10 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     if let Some(r) = crate::color_presets_panel::menu(app, id) {
         return r;
     }
+    // Window › Face Reshape and its Apply action.
+    if let Some(r) = crate::face_reshape_panel::menu(app, id) {
+        return r;
+    }
     // A filter on a type layer asks to rasterize it first (#4303).
     if let Some(r) = crate::rasterize_prompt::intercept_filter(app, id, &params) {
         return r;
@@ -739,7 +743,8 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         | "basicColor.toggleSelection"
         | "colorPresets.save"
         | "colorPresets.apply"
-        | "colorPresets.runBatch" => true,
+        | "colorPresets.runBatch"
+        | "faceReshape.apply" => true,
         "window.togglePanels" => true,
         // With one document open the key stays quiet, as in Photoshop, rather than reporting why.
         "window.nextDocument" | "window.previousDocument" => app.session.active().is_some(),
@@ -871,6 +876,7 @@ fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
         "window.toggle.retouchAI" => p.retouch_ai,
         "window.toggle.basicColor" => p.basic_color,
         "window.toggle.colorPresets" => p.color_presets,
+        "window.toggle.faceReshape" => p.face_reshape,
         _ => return None,
     })
 }

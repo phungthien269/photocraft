@@ -3278,3 +3278,6 @@ curves	Smooth	Glätten
 	Select a Basic Color layer first.	Wähle zuerst eine Basic Color-Ebene aus.
 	Selection overlay shown.	Auswahlüberlagerung eingeblendet.
 	Selection overlay hidden.	Auswahlüberlagerung ausgeblendet.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Gesichtsform
+	Face Reshape: Apply	Gesichtsform: Anwenden

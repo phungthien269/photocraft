@@ -3977,3 +3977,6 @@ curves	Smooth	Εξομάλυνση
 	Select a Basic Color layer first.	Επιλέξτε πρώτα ένα επίπεδο Basic Color.
 	Selection overlay shown.	Η επικάλυψη επιλογής εμφανίστηκε.
 	Selection overlay hidden.	Η επικάλυψη επιλογής αποκρύφτηκε.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Αναδιαμόρφωση προσώπου
+	Face Reshape: Apply	Αναδιαμόρφωση προσώπου: Εφαρμογή

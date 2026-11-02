@@ -3876,3 +3876,6 @@ curves	Smooth	Wygładź
 	Select a Basic Color layer first.	Najpierw wybierz warstwę Basic Color.
 	Selection overlay shown.	Nakładka zaznaczenia jest widoczna.
 	Selection overlay hidden.	Nakładka zaznaczenia jest ukryta.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Zmiana kształtu twarzy
+	Face Reshape: Apply	Zmiana kształtu twarzy: Zastosuj

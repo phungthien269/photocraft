@@ -4394,3 +4394,6 @@ shape	Appearance	Aspetto
 	Select a Basic Color layer first.	Seleziona prima un livello Basic Color.
 	Selection overlay shown.	Sovrapposizione selezione mostrata.
 	Selection overlay hidden.	Sovrapposizione selezione nascosta.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Rimodella viso
+	Face Reshape: Apply	Rimodella viso: Applica

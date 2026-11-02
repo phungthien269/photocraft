@@ -3954,3 +3954,6 @@ curves	Smooth	スムーズ
 	Select a Basic Color layer first.	先に Basic Color レイヤーを選択してください。
 	Selection overlay shown.	選択範囲のオーバーレイを表示しました。
 	Selection overlay hidden.	選択範囲のオーバーレイを非表示にしました。
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	顔のリシェイプ
+	Face Reshape: Apply	顔のリシェイプ: 適用

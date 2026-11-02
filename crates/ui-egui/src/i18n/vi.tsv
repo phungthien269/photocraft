@@ -3923,3 +3923,6 @@ curves	Smooth	Làm mượt
 	Select a Basic Color layer first.	Hãy chọn một lớp Chỉnh màu trước.
 	Selection overlay shown.	Đã hiện lớp phủ vùng chọn.
 	Selection overlay hidden.	Đã ẩn lớp phủ vùng chọn.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Định hình khuôn mặt
+	Face Reshape: Apply	Định hình khuôn mặt: Áp dụng

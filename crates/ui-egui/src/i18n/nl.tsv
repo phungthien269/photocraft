@@ -4037,3 +4037,6 @@ curves	Smooth	Vloeiend maken
 	Select a Basic Color layer first.	Selecteer eerst een Basic Color-laag.
 	Selection overlay shown.	Selectie-overlay getoond.
 	Selection overlay hidden.	Selectie-overlay verborgen.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Gezichtsvorm
+	Face Reshape: Apply	Gezichtsvorm: Toepassen

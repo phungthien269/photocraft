@@ -3272,3 +3272,6 @@ curves	Smooth	Haluskan
 	Select a Basic Color layer first.	Pilih layer Basic Color terlebih dahulu.
 	Selection overlay shown.	Hamparan pilihan ditampilkan.
 	Selection overlay hidden.	Hamparan pilihan disembunyikan.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Bentuk Ulang Wajah
+	Face Reshape: Apply	Bentuk Ulang Wajah: Terapkan

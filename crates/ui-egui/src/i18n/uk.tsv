@@ -3985,3 +3985,6 @@ curves	Smooth	Згладити
 	Select a Basic Color layer first.	Спочатку виберіть шар Basic Color.
 	Selection overlay shown.	Накладення виділення показано.
 	Selection overlay hidden.	Накладення виділення приховано.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Зміна форми обличчя
+	Face Reshape: Apply	Зміна форми обличчя: Застосувати

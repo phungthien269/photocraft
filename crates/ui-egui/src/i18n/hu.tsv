@@ -4196,3 +4196,6 @@ cameraRaw	Yellow	Sárga
 	Select a Basic Color layer first.	Először jelöljön ki egy Basic Color réteget.
 	Selection overlay shown.	A kijelölés átfedése megjelenítve.
 	Selection overlay hidden.	A kijelölés átfedése elrejtve.
+# Face Reshape panel actions (Window menu and its shortcut)
+	Face Reshape	Arcformálás
+	Face Reshape: Apply	Arcformálás: Alkalmaz
