@@ -2132,7 +2132,7 @@ fn has_pixel_layer_for_landmarks(s: &Session) -> std::result::Result<(), String>
     }
 }
 
-/// Read-only QA query: the 468 MediaPipe landmarks of one face, every face, or a numbered face.
+/// Read-only QA query: the 478 MediaPipe landmarks of one face, every face, or a numbered face.
 fn face_landmarks_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let choice = LandmarkChoice::parse(p)?;
     let layer_id = crate::commands::layer_param(s, p)?;
@@ -2218,7 +2218,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Retouch AI: Face Landmarks",
             menu: &[],
             shortcut: None,
-            params: r##"{"layer":id|name? (pixel layer; default active layer),"faces":"main"|"all"|1..n="main"} → {"faces":[{"box":[x,y,w,h],"points":[[x,y,z],…]}],"count":n} (468 points per face in document pixels; z is the model's relative depth; read-only QA query)"##,
+            params: r##"{"layer":id|name? (pixel layer; default active layer),"faces":"main"|"all"|1..n="main"} → {"faces":[{"box":[x,y,w,h],"points":[[x,y,z],…]}],"count":n} (478 points per face in document pixels; z is the model's relative depth; read-only QA query)"##,
             enabled: has_pixel_layer_for_landmarks,
             run: face_landmarks_cmd,
             journal: false,

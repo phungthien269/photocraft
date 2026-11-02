@@ -17,7 +17,7 @@ JetBrains Mono font (assets/fonts/JetBrainsMono-Regular.ttf) — SIL Open Font L
 Lucide icons (assets/icons/*.svg, except slice-knife.svg) — ISC; icons derived from Feather also MIT. See assets/icons/LICENSE-lucide.txt.
 SCOWL English word list (assets/dict/en_US-scowl-50.txt.gz) — SCOWL license. See assets/dict/LICENSE-SCOWL.txt.
 libfacedetection face detection weights and network (crates/algo/data/libfacedetection.bin, crates/algo/src/faces/cnn.rs) — BSD-3-Clause, Copyright (c) 2015-2019, Shiqi Yu, all rights reserved. See crates/algo/data/LICENSE-libfacedetection.txt.
-MediaPipe Face Landmark Detector ONNX model (crates/algo/data/face_landmark/) — Apache-2.0, Google MediaPipe. See crates/algo/data/face_landmark/NOTICE and LICENSE-APACHE.
+MediaPipe Face Landmarker 478 ONNX model (crates/algo/data/face_landmark/) — Apache-2.0, Google MediaPipe. See crates/algo/data/face_landmark/README.md, NOTICE and LICENSE-APACHE.
 
 Builds made with craft-fonts (CRAFT_FONTS_DIR; all official releases) also embed the fonts listed in
 https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (today BIZ UDPGothic, Shippori Mincho and

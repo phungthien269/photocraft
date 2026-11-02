@@ -1,14 +1,18 @@
-MediaPipe Face Landmark model
-=============================
+MediaPipe Face Landmarker model
+===============================
 
-face_landmark_detector.onnx and face_landmark_detector.data are the MediaPipe
-Face Landmark Detector exported to ONNX (Apache-2.0), as distributed with the
-Qualcomm AI Hub model assets and metadata.json included here.
+face_landmark_detector.onnx is Google MediaPipe's Face Landmarker 478-point face
+landmark model exported to ONNX (producer: tf2onnx 1.17.0). The graph is
+self-contained: its weights are stored inside the ONNX file, with no external
+data file.
 
-The model is used by crates/algo/src/face_mesh.rs to predict 468 face landmarks
-for Face Reshape. It is not modified. The original ONNX graph references its
-weights through the external-data file named face_landmark_detector.data; that
-exact filename is kept.
+The model is used by crates/algo/src/face_mesh.rs to predict 478 face landmarks
+for Face Reshape. It is not modified after export. See README.md in this
+directory for the input/output contract, source URL, file size and checksum.
+
+Upstream model: Google MediaPipe Face Landmarker,
+https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker
+Upstream code: https://github.com/google-ai-edge/mediapipe
 
 License: Apache License, Version 2.0. See LICENSE-APACHE in this directory.
-The upstream model card and metadata are retained in metadata.json.
+Copyright Google LLC.

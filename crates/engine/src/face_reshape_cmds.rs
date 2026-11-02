@@ -1,6 +1,6 @@
 //! Face Reshape: non-destructive, parametric warping of the main face.
 //!
-//! `retouchAI.faceReshape` detects the best face in the source pixel layer, reads its 468
+//! `retouchAI.faceReshape` detects the best face in the source pixel layer, reads its 478
 //! MediaPipe landmarks (via [`photocraft_algo::face_mesh`]), turns the 68 sliders into landmark
 //! displacements, and warps only the face region through [`photocraft_algo::warp::warp_mesh_surface`].
 //! The source layer is never touched: a preview holds the warped region above it, and Apply
@@ -14,7 +14,7 @@
 //! slider's name (a wider jaw, a higher brow, thicker upper lip). Out-of-range numbers are
 //! clamped; wrong types and unknown keys are errors.
 //!
-//! A few sliders describe depth, hair or teeth, which the 468 face landmarks cannot fully express:
+//! A few sliders describe depth, hair or teeth, which the 478 face landmarks cannot fully express:
 //! `hair_volume`, `hairline_shift`, `cranium_height`, `chin_cleft`, `teeth_align` and the
 //! projection sliders use the standard 2-D cues (local scale, a small shift of the feature toward
 //! or away from the face centre, and the forehead/hairline contour) and are documented
@@ -24,10 +24,9 @@
 //!
 //! ## Derived points
 //!
-//! MediaPipe's 468-point model has no iris and no neck: 10 iris points (5 per eye: centre plus
-//! right/top/left/bottom) are derived from each eye's contour, and 6 neck controls are derived
-//! below the chin from the face box. They are internal controls only; the command still reports
-//! 468 landmarks.
+//! MediaPipe's 478-point model includes the 10 iris points (5 per eye: centre plus
+//! right/top/left/bottom) but no neck: 6 neck controls are derived below the chin from the face
+//! box. They are internal controls only; the command still reports 478 landmarks.
 //!
 //! ## Field
 //!
@@ -247,11 +246,11 @@ const EYE_A_OUTER: usize = 33;
 const EYE_A_INNER: usize = 133;
 const EYE_B_OUTER: usize = 263;
 const EYE_B_INNER: usize = 362;
-/// Derived iris controls: [`EYE_A`] then [`EYE_B`], five points each.
+/// Iris controls in the 478-point model: [`EYE_A`] then [`EYE_B`], five points each.
 const IRIS_A: &[usize] = &[468, 469, 470, 471, 472];
 const IRIS_B: &[usize] = &[473, 474, 475, 476, 477];
-/// Both eyes and their derived irises: symmetry must pair the left eye with the right one, so
-/// the group has to contain both sides.
+/// Both eyes and their irises: symmetry must pair the left eye with the right one, so the
+/// group has to contain both sides.
 const EYES_ALL: &[usize] =
     &[33, 7, 163, 144, 145, 153, 154, 155, 133, 263, 249, 390, 373, 374, 380, 381, 382, 362, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477];
 
@@ -297,7 +296,8 @@ const MOUTH: &[usize] = &[
 const MOUTH_CORNERS: &[usize] = &[61, 291];
 const PHILTRUM: &[usize] = &[0, 1, 2, 3, 4, 5, 6, 19, 94, 98, 168, 195, 197, 327, 326];
 
-/// Derived neck controls, below the chin (see [`Geometry::from_landmarks`]).
+/// Derived neck controls, below the chin (see [`Geometry::from_landmarks`]). They follow the
+/// 478 model points, so their indices start at 478.
 const NECK: &[usize] = &[478, 479, 480, 481, 482, 483];
 const ALL_FACE: &[usize] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
@@ -314,15 +314,15 @@ const ALL_FACE: &[usize] = &[
     363, 364, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393,
     394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423, 424,
     425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455,
-    456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467,
+    456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477,
 ];
 
 // ---------------------------------------------------------------------------------------------
 // Geometry
 // ---------------------------------------------------------------------------------------------
 
-/// Landmark geometry for one face: the 468 model points, 10 derived iris controls and 6 derived
-/// neck controls, plus the face box and a mirror-pair map.
+/// Landmark geometry for one face: the 478 model points (including the 10 iris controls) and 6
+/// derived neck controls, plus the face box and a mirror-pair map.
 struct Geometry {
     base: Vec<[f64; 2]>,
     pts: Vec<[f64; 2]>,
@@ -340,7 +340,7 @@ impl Geometry {
         if face.is_empty() {
             return Err("face reshape needs a face box with a positive size".into());
         }
-        let mut base = Vec::with_capacity(points.len() + 16);
+        let mut base = Vec::with_capacity(points.len() + 6);
         for point in points {
             if !point[0].is_finite() || !point[1].is_finite() {
                 return Err("face reshape got a non-finite landmark".into());
@@ -350,34 +350,7 @@ impl Geometry {
         let center = [f64::from(face.x0) + f64::from(face.width()) * 0.5, f64::from(face.y0) + f64::from(face.height()) * 0.5];
         let size = f64::from(face.width().max(face.height())).max(1.0);
 
-        // 10 derived iris controls: 5 per eye (centre, right, top, left, bottom). MediaPipe's 468
-        // model stops at the eye contour, so these are inferred from its shape.
-        for eye in [EYE_A, EYE_B] {
-            let c = centroid_of(&base, eye);
-            let (mut min_x, mut max_x, mut min_y, mut max_y) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-            for &i in eye {
-                if let Some(p) = base.get(i) {
-                    min_x = min_x.min(p[0]);
-                    max_x = max_x.max(p[0]);
-                    min_y = min_y.min(p[1]);
-                    max_y = max_y.max(p[1]);
-                }
-            }
-            if min_x > max_x || min_y > max_y {
-                min_x = c[0] - size * 0.05;
-                max_x = c[0] + size * 0.05;
-                min_y = c[1] - size * 0.025;
-                max_y = c[1] + size * 0.025;
-            }
-            let r = ((max_x - min_x).min((max_y - min_y) * 1.4) * 0.18).max(0.75);
-            base.push(c);
-            base.push([c[0] + r, c[1]]);
-            base.push([c[0], c[1] - r]);
-            base.push([c[0] - r, c[1]]);
-            base.push([c[0], c[1] + r]);
-        }
-
-        // 6 derived neck controls below the chin; the 468 model covers the face only.
+        // 6 derived neck controls below the chin; the 478 model covers the face and eyes only.
         let chin = base.get(152).copied().unwrap_or([center[0], f64::from(face.y1)]);
         let w = f64::from(face.width());
         let h = f64::from(face.height());
@@ -921,7 +894,7 @@ impl Geometry {
     }
 }
 
-/// 468 face points plus the 16 derived iris/neck controls.
+/// 478 face points plus the 6 derived neck controls.
 static ALL_FACE_PLUS_DERIVED: OnceLock<Vec<usize>> = OnceLock::new();
 
 fn all_face_plus_derived() -> &'static [usize] {
@@ -1098,7 +1071,7 @@ fn smoothstep(t: f64) -> f64 {
 // Detection and landmarks
 // ---------------------------------------------------------------------------------------------
 
-/// One face and its 468 landmarks, in document pixels.
+/// One face and its 478 landmarks, in document pixels.
 #[derive(Clone)]
 struct FaceInput {
     rect: Rect,
@@ -1505,7 +1478,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Face Reshape",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (pixel source; default active layer),"params":{"head_scale": -100..100=0,"cranium_height": -100..100=0,"hair_volume": -100..100=0,"hairline_shift": -100..100=0,"face_slim": -100..100=0,"face_width": -100..100=0,"face_length": -100..100=0,"jaw_width": -100..100=0,"jaw_angle": -100..100=0,"cheekbone_shrink": -100..100=0,"cheek_slim": -100..100=0,"temple_fill": -100..100=0,"chin_length": -100..100=0,"chin_width": -100..100=0,"chin_protrusion": -100..100=0,"chin_cleft": -100..100=0,"double_chin_warp": -100..100=0,"eye_size": -100..100=0,"eye_width": -100..100=0,"eye_height": -100..100=0,"eye_distance": -100..100=0,"eye_tilt": -100..100=0,"eye_position_y": -100..100=0,"inner_canthus": -100..100=0,"outer_canthus": -100..100=0,"lower_eyelid_down": -100..100=0,"pupil_scale": -100..100=0,"aegyo_sal": -100..100=0,"eye_brow_distance": -100..100=0,"eyelid_fold_width": -100..100=0,"eyebrow_height": -100..100=0,"eyebrow_distance": -100..100=0,"eyebrow_length": -100..100=0,"eyebrow_thickness": -100..100=0,"eyebrow_arch": -100..100=0,"eyebrow_tail": -100..100=0,"eyebrow_tilt": -100..100=0,"nose_scale": -100..100=0,"nose_wing_width": -100..100=0,"nose_tip_size": -100..100=0,"nose_tip_angle": -100..100=0,"nose_length": -100..100=0,"bridge_width": -100..100=0,"bridge_curvature": -100..100=0,"nasal_hump_reduction": -100..100=0,"columella_height": -100..100=0,"radix_height": -100..100=0,"nostril_size": -100..100=0,"mouth_scale": -100..100=0,"mouth_width": -100..100=0,"mouth_position_y": -100..100=0,"philtrum_length": -100..100=0,"upper_lip_thickness": -100..100=0,"lower_lip_thickness": -100..100=0,"smile_corners": -100..100=0,"m_lip_shape": -100..100=0,"lip_plumpness": -100..100=0,"lip_protrusion": -100..100=0,"lower_lip_to_chin": -100..100=0,"teeth_align": -100..100=0,"three_section_ratio": -100..100=0,"face_symmetry": -100..100=0,"eye_symmetry": -100..100=0,"eyebrow_symmetry": -100..100=0,"neck_slim": -100..100=0,"neck_length": -100..100=0,"e_line_adjustment": -100..100=0,"midface_projection": -100..100=0},"preview":bool=true,"previewLayer":id?,"compare":bool=false,"reset":bool=false} → {"layer":id?,"name":str,"preview":bool,"compare":bool,"face":[x,y,w,h],"points":468,"changed":bool} (non-destructive: source pixels and history stay intact; preview:true makes a "Face Reshape Preview" layer above the source, preview:false renames/creates "Face Reshape", compare hides/shows the preview, reset removes it; pass the same "coalesce" key from a slider drag for one history step)"##,
+        params: r##"{"layer":id? (pixel source; default active layer),"params":{"head_scale": -100..100=0,"cranium_height": -100..100=0,"hair_volume": -100..100=0,"hairline_shift": -100..100=0,"face_slim": -100..100=0,"face_width": -100..100=0,"face_length": -100..100=0,"jaw_width": -100..100=0,"jaw_angle": -100..100=0,"cheekbone_shrink": -100..100=0,"cheek_slim": -100..100=0,"temple_fill": -100..100=0,"chin_length": -100..100=0,"chin_width": -100..100=0,"chin_protrusion": -100..100=0,"chin_cleft": -100..100=0,"double_chin_warp": -100..100=0,"eye_size": -100..100=0,"eye_width": -100..100=0,"eye_height": -100..100=0,"eye_distance": -100..100=0,"eye_tilt": -100..100=0,"eye_position_y": -100..100=0,"inner_canthus": -100..100=0,"outer_canthus": -100..100=0,"lower_eyelid_down": -100..100=0,"pupil_scale": -100..100=0,"aegyo_sal": -100..100=0,"eye_brow_distance": -100..100=0,"eyelid_fold_width": -100..100=0,"eyebrow_height": -100..100=0,"eyebrow_distance": -100..100=0,"eyebrow_length": -100..100=0,"eyebrow_thickness": -100..100=0,"eyebrow_arch": -100..100=0,"eyebrow_tail": -100..100=0,"eyebrow_tilt": -100..100=0,"nose_scale": -100..100=0,"nose_wing_width": -100..100=0,"nose_tip_size": -100..100=0,"nose_tip_angle": -100..100=0,"nose_length": -100..100=0,"bridge_width": -100..100=0,"bridge_curvature": -100..100=0,"nasal_hump_reduction": -100..100=0,"columella_height": -100..100=0,"radix_height": -100..100=0,"nostril_size": -100..100=0,"mouth_scale": -100..100=0,"mouth_width": -100..100=0,"mouth_position_y": -100..100=0,"philtrum_length": -100..100=0,"upper_lip_thickness": -100..100=0,"lower_lip_thickness": -100..100=0,"smile_corners": -100..100=0,"m_lip_shape": -100..100=0,"lip_plumpness": -100..100=0,"lip_protrusion": -100..100=0,"lower_lip_to_chin": -100..100=0,"teeth_align": -100..100=0,"three_section_ratio": -100..100=0,"face_symmetry": -100..100=0,"eye_symmetry": -100..100=0,"eyebrow_symmetry": -100..100=0,"neck_slim": -100..100=0,"neck_length": -100..100=0,"e_line_adjustment": -100..100=0,"midface_projection": -100..100=0},"preview":bool=true,"previewLayer":id?,"compare":bool=false,"reset":bool=false} → {"layer":id?,"name":str,"preview":bool,"compare":bool,"face":[x,y,w,h],"points":478,"changed":bool} (non-destructive: source pixels and history stay intact; preview:true makes a "Face Reshape Preview" layer above the source, preview:false renames/creates "Face Reshape", compare hides/shows the preview, reset removes it; pass the same "coalesce" key from a slider drag for one history step)"##,
         enabled: has_face_source,
         run: face_reshape_cmd,
         journal: true,
@@ -1740,7 +1713,7 @@ mod tests {
         assert_eq!(FaceReshapeParams::KEYS.first(), Some(&"head_scale"));
         assert_eq!(FaceReshapeParams::KEYS.last(), Some(&"midface_projection"));
         assert_eq!(ALL_FACE.len(), face_mesh::POINTS, "the global group covers every model landmark exactly once");
-        assert_eq!(all_face_plus_derived().len(), face_mesh::POINTS + 16, "10 derived iris + 6 derived neck controls");
+        assert_eq!(all_face_plus_derived().len(), face_mesh::POINTS + 6, "6 derived neck controls after the 478 model points");
         assert_eq!(IRIS_A.len() + IRIS_B.len(), 10);
         assert_eq!(NECK.len(), 6);
         let params = FaceReshapeParams::default();
@@ -1764,6 +1737,17 @@ mod tests {
         // Serde defaults are the same all-zero state.
         let from_serde: FaceReshapeParams = serde_json::from_value(json!({})).unwrap();
         assert!(from_serde.is_identity());
+    }
+
+    #[test]
+    fn geometry_keeps_the_model_iris_and_derives_only_the_six_neck_controls() {
+        let face = test_face();
+        let g = Geometry::from_landmarks(&face.points, face.rect).unwrap();
+        assert_eq!(g.base.len(), 484, "478 model points plus only 6 neck controls");
+        assert_eq!(g.pts.len(), 484);
+        let model: Vec<[f64; 2]> = face.points[468..478].iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+        assert_eq!(g.base[468..478].to_vec(), model, "the iris controls are the model's own 468..478 points, not derived copies");
+        assert!(Geometry::from_landmarks(&face.points[..468], face.rect).is_err(), "an old 468-point face is rejected");
     }
 
     #[test]
@@ -1826,7 +1810,7 @@ mod tests {
         let r = execute_with_face(&mut s, json!({"params": {}})).unwrap();
         assert_eq!(r["changed"], false);
         assert_eq!(r["layer"], Value::Null);
-        assert_eq!(r["points"], 468);
+        assert_eq!(r["points"], 478);
         assert!(names(&s).iter().all(|n| n != PREVIEW_NAME && n != FINAL_NAME));
         assert_eq!(pixels(&s, source), before, "the source layer is untouched");
         assert_eq!(history_len(&s), steps, "an identity call is not a history step");
@@ -1842,7 +1826,7 @@ mod tests {
         assert_eq!(r["changed"], true);
         assert_eq!(r["name"], PREVIEW_NAME);
         assert_eq!(r["preview"], true);
-        assert_eq!(r["points"], 468);
+        assert_eq!(r["points"], 478);
         assert_eq!(r["face"][0].as_f64(), Some(f64::from(face.x0)));
         assert_eq!(r["face"][1].as_f64(), Some(f64::from(face.y0)));
         assert_eq!(r["face"][2].as_f64(), Some(f64::from(face.width())));

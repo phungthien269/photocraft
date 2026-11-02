@@ -1,39 +1,38 @@
-//! MediaPipe 468-point face landmarks, the foundation for Face Reshape.
+//! MediaPipe 478-point face landmarks, the foundation for Face Reshape.
 //!
-//! The model is the MediaPipe Face Landmark Detector exported to ONNX (Apache-2.0; see
-//! `data/face_landmark/NOTICE`). It takes one `1×3×192×192` RGB crop in `0..=1` and returns
-//! normalized `x, y, z` for 468 points. [`landmarks`] builds that crop around a detected face
-//! box, runs the model with `tract` and maps the points back to the coordinates of the image.
+//! The model is the MediaPipe Face Landmarker 478 exported to ONNX (Apache-2.0; see
+//! `data/face_landmark/README.md`). It takes one `1×256×256×3` RGB face crop in `0..=1` and
+//! returns `x, y, z` in crop pixels for 478 points. [`landmarks`] builds that crop around a
+//! detected face box, runs the model with `tract` and maps the points back to the coordinates
+//! of the image.
 //!
 //! The network is native only, like [`crate::faces`]: the browser build leaves `tract` and the
-//! ~2.4 MB of weights out (the web build has a per-file size budget), so [`AVAILABLE`] is false
+//! ~4.9 MB of weights out (the web build has a per-file size budget), so [`AVAILABLE`] is false
 //! and [`landmarks`] returns an error there.
 //!
-//! The ONNX graph keeps its weights in the external file `face_landmark_detector.data`. Both
-//! files are embedded in the binary; on first use they are copied to a unique directory under
-//! the system temporary directory so `tract` can resolve the external data, and the model is
-//! optimized and cached in a `OnceLock` for every later call. Nothing is written to the
-//! document or the user's project.
+//! The ONNX graph stores its weights inside the file, so it is embedded directly and loaded from
+//! memory; the optimized model is cached in a `OnceLock` for every later call. Nothing is written
+//! to the document or the user's project.
 
 /// Number of points the model returns.
-pub const POINTS: usize = 468;
+pub const POINTS: usize = 478;
 
 /// Whether this build can predict face landmarks (not the browser build: see the module docs).
 pub const AVAILABLE: bool = cfg!(not(target_arch = "wasm32"));
 
 /// Side of the square the model expects.
 #[cfg(not(target_arch = "wasm32"))]
-const INPUT_SIDE: usize = 192;
+const INPUT_SIDE: usize = 256;
 
 /// Padding around the face box: the crop's side is this multiple of the box's longest side.
 #[cfg(not(target_arch = "wasm32"))]
 const CROP_PADDING: f32 = 1.5;
 
-/// 468 landmarks for the face in `face_rect` (`[x, y, w, h]`, document pixels).
+/// 478 landmarks for the face in `face_rect` (`[x, y, w, h]`, document pixels).
 ///
 /// `rgba` is straight RGBA `0..=1`, `width × height`, row-major. The crop is a square centred on
 /// the face box with 1.5× its longest side, sampled bilinearly (edge-clamped when the square
-/// reaches past the image), then resized to 192×192 and fed as NCHW RGB.
+/// reaches past the image), then resized to 256×256 and fed as NHWC RGB.
 ///
 /// The returned `x` and `y` are in the same coordinates as `face_rect` (document pixels); `z`
 /// is the model's relative depth, left unscaled so it can be compared between points. Every
@@ -91,20 +90,19 @@ impl Crop {
         Ok(Self { left, top, side })
     }
 
-    /// NCHW RGB `0..=1` for the 192×192 model input, bilinear and edge-clamped.
+    /// NHWC RGB `0..=1` for the 256×256 model input, bilinear and edge-clamped.
     fn input(self, rgba: &[[f32; 4]], width: usize, height: usize) -> Vec<f32> {
-        let plane = INPUT_SIDE * INPUT_SIDE;
-        let mut out = vec![0.0f32; plane * 3];
+        let mut out = vec![0.0f32; INPUT_SIDE * INPUT_SIDE * 3];
         let scale = self.side / INPUT_SIDE as f32;
         for ty in 0..INPUT_SIDE {
             let sy = self.top + (ty as f32 + 0.5) * scale - 0.5;
             for tx in 0..INPUT_SIDE {
                 let sx = self.left + (tx as f32 + 0.5) * scale - 0.5;
                 let [r, g, b] = self.sample(rgba, width, height, sx, sy);
-                let i = ty * INPUT_SIDE + tx;
+                let i = (ty * INPUT_SIDE + tx) * 3;
                 out[i] = r;
-                out[plane + i] = g;
-                out[2 * plane + i] = b;
+                out[i + 1] = g;
+                out[i + 2] = b;
             }
         }
         out
@@ -133,7 +131,7 @@ impl Crop {
         c
     }
 
-    /// Run the cached model and map its normalized points back to the crop.
+    /// Run the cached model and map its crop-pixel points back to the document.
     #[cfg(not(target_arch = "wasm32"))]
     fn run(self, input: Vec<f32>) -> Result<Vec<[f32; 3]>, String> {
         use tract_onnx::prelude::*;
@@ -141,7 +139,7 @@ impl Crop {
         let cached = MODEL.get_or_init(load_model);
         let model = cached.as_ref().map_err(|e| e.clone())?;
         let model = model.lock().map_err(|_| "face landmark model lock is poisoned".to_string())?;
-        let array = tract_ndarray::Array4::from_shape_vec((1, 3, INPUT_SIDE, INPUT_SIDE), input).map_err(|e| format!("face landmark input: {e}"))?;
+        let array = tract_ndarray::Array4::from_shape_vec((1, INPUT_SIDE, INPUT_SIDE, 3), input).map_err(|e| format!("face landmark input: {e}"))?;
         let tensor: Tensor = array.into();
         let outputs = model.run(tvec!(tensor.into())).map_err(|e| format!("face landmark inference failed: {e}"))?;
         let mut found = None;
@@ -151,18 +149,19 @@ impl Crop {
                 continue;
             }
             let flat = view.as_slice().ok_or_else(|| "face landmark output is not contiguous".to_string())?;
+            let scale = self.side / INPUT_SIDE as f32;
             let mut points = Vec::with_capacity(POINTS);
             for i in 0..POINTS {
-                let (nx, ny, z) = (flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]);
-                if !nx.is_finite() || !ny.is_finite() || !z.is_finite() {
+                let (px, py, z) = (flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]);
+                if !px.is_finite() || !py.is_finite() || !z.is_finite() {
                     return Err("face landmark model returned a non-finite point".into());
                 }
-                points.push([self.left + nx * self.side, self.top + ny * self.side, z]);
+                points.push([self.left + px * scale, self.top + py * scale, z]);
             }
             found = Some(points);
             break;
         }
-        found.ok_or_else(|| "face landmark model returned no 468-point output".into())
+        found.ok_or_else(|| "face landmark model returned no 478-point output".into())
     }
 }
 
@@ -175,20 +174,12 @@ fn clamp_index(v: f32, len: usize) -> usize {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use tract_onnx::prelude::*;
 
-    const ONNX_NAME: &str = "face_landmark_detector.onnx";
-    const DATA_NAME: &str = "face_landmark_detector.data";
-
-    /// The graph and its weights; the external file must keep this exact name.
+    /// The self-contained graph: its weights are stored inside the ONNX file.
     const ONNX: &[u8] = include_bytes!("../data/face_landmark/face_landmark_detector.onnx");
-    const DATA: &[u8] = include_bytes!("../data/face_landmark/face_landmark_detector.data");
 
     type Runnable = Arc<TypedRunnableModel>;
 
@@ -196,55 +187,17 @@ mod native {
     /// instead of retrying a broken or unsupported model on every command.
     pub(super) static MODEL: OnceLock<Result<Mutex<Runnable>, String>> = OnceLock::new();
 
-    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
-
-    /// A unique temporary directory, removed when it goes out of scope.
-    struct TempDir(PathBuf);
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn temp_dir() -> Result<TempDir, String> {
-        let base = std::env::temp_dir();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        for _ in 0..64 {
-            let n = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
-            let path = base.join(format!("photocraft-face-landmark-{}-{nanos}-{n}", std::process::id()));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(TempDir(path)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(format!("could not create a temporary directory for the face landmark model: {e}")),
-            }
-        }
-        Err("could not create a unique temporary directory for the face landmark model".into())
-    }
-
-    /// Copy the embedded model and external data once, then build and optimize the graph.
+    /// Read the embedded model from memory once, then build and optimize the graph.
     pub(super) fn load_model() -> Result<Mutex<Runnable>, String> {
-        let dir = temp_dir()?;
-        let onnx = dir.0.join(ONNX_NAME);
-        let data = dir.0.join(DATA_NAME);
-        write_file(&onnx, ONNX)?;
-        write_file(&data, DATA)?;
-        let model = load_from_dir(&onnx)?;
-        Ok(Mutex::new(model))
-    }
-
-    fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-        fs::write(path, bytes).map_err(|e| format!("could not write the face landmark model to {}: {e}", path.display()))
-    }
-
-    fn load_from_dir(onnx: &Path) -> Result<Runnable, String> {
-        tract_onnx::onnx()
-            .model_for_path(onnx)
+        let mut reader = ONNX;
+        let model = tract_onnx::onnx()
+            .model_for_read(&mut reader)
             .map_err(|e| format!("could not read the face landmark model: {e}"))?
             .into_optimized()
             .map_err(|e| format!("could not optimize the face landmark model: {e}"))?
             .into_runnable()
-            .map_err(|e| format!("could not prepare the face landmark model: {e}"))
+            .map_err(|e| format!("could not prepare the face landmark model: {e}"))?;
+        Ok(Mutex::new(model))
     }
 }
 
@@ -267,11 +220,16 @@ mod tests {
     }
 
     #[test]
-    fn model_returns_468_finite_points_for_a_192_crop() {
-        let px = synthetic(192, 192);
-        let points = landmarks(&px, 192, 192, [48.0, 48.0, 96.0, 96.0]).expect("the bundled model must load and run");
+    fn model_returns_478_finite_points_for_a_256_crop() {
+        let px = synthetic(256, 256);
+        let points = landmarks(&px, 256, 256, [64.0, 64.0, 128.0, 128.0]).expect("the bundled model must load and run");
+        assert_eq!(POINTS, 478);
         assert_eq!(points.len(), POINTS);
         assert!(points.iter().flatten().all(|v| v.is_finite()), "every x, y and z is finite");
+        assert!(
+            points.iter().all(|p| (0.0..=256.0).contains(&p[0]) && (0.0..=256.0).contains(&p[1])),
+            "crop-pixel points are mapped to document pixels, not left at 0..256 or multiplied by 256"
+        );
     }
 
     #[test]
