@@ -89,6 +89,7 @@ pub mod enable_rules;
 pub mod eraser_ui;
 pub mod export_dialog;
 pub mod eyedropper_ui;
+pub mod face_reshape_panel;
 pub mod field_tab;
 pub mod file_dialog;
 pub mod file_open;
@@ -2084,6 +2085,7 @@ impl eframe::App for PhotocraftApp {
         panels::properties_window(self, &ctx);
         brush_panel::window(self, &ctx);
         retouch_ai_panel::window(self, &ctx);
+        face_reshape_panel::window(self, &ctx);
         basic_color_panel::window(self, &ctx);
         color_presets_panel::window(self, &ctx);
         preset_panels::windows(self, &ctx);

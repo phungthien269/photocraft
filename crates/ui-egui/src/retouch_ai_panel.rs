@@ -676,6 +676,7 @@ enum Action {
     Run,
     SkinSmoothBrush,
     EvenToneBrush,
+    OpenFaceReshape,
     SetOpacity { layer: u64, opacity: f32, gesture: u64 },
     SetVisible { layer: u64, visible: bool },
     PickReference,
@@ -977,6 +978,7 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
         Action::Run => run_combo(app),
         Action::SkinSmoothBrush => run_skin_smooth_brush(app),
         Action::EvenToneBrush => run_even_tone_brush(app),
+        Action::OpenFaceReshape => app.ui.panels.face_reshape = true,
         Action::SetOpacity { layer, opacity, gesture } => {
             let params = json!({
                 "layer": layer,
@@ -1373,6 +1375,11 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                             tool_row(ui, state, spec.id, &tool_tips[i]);
                         }
                         if index == 0 {
+                            let reshape = widgets::primary_button(ui, crate::face_reshape_panel::entry_label(), ui.available_width());
+                            if reshape.clicked() {
+                                actions.push(Action::OpenFaceReshape);
+                            }
+                            ui.add_space(2.0);
                             let brush =
                                 ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::SKIN_SMOOTH_BRUSH), ui.available_width())).inner;
                             if brush.clicked() {
@@ -1812,6 +1819,28 @@ mod tests {
         assert!(h.query_all_by_label("Effect radius").next().is_some(), "the effect radius slider is under the strength");
         assert!(h.query_all_by_label("Brush softness").next().is_some(), "the brush softness slider is under the radius");
         assert!(h.query_all_by_label("Even skin tone").next().is_some(), "the even-tone checkbox is under the button");
+    }
+
+    #[test]
+    fn face_reshape_entry_opens_the_panel() {
+        let mut app = app();
+        app.ui.panels.retouch_ai = true;
+        let mut h = Harness::builder().with_size(vec2(900.0, 800.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let ctx = ui.ctx().clone();
+                if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                window(app, &ctx);
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(4);
+        assert!(!h.state().ui.panels.face_reshape, "the Face Reshape window starts closed");
+        h.get_by_label(crate::face_reshape_panel::entry_label()).click();
+        h.run_steps(3);
+        assert!(h.state().ui.panels.face_reshape, "the Retouch entry opens the Face Reshape window");
     }
 
     #[test]

@@ -395,6 +395,9 @@ pub struct Panels {
     /// Window › Retouch AI: a floating window, like Brush Settings.
     #[serde(default)]
     pub retouch_ai: bool,
+    /// Face Reshape, opened from Retouch › Skin & Face: a floating window.
+    #[serde(default)]
+    pub face_reshape: bool,
     /// Window › Basic Color: a floating window around a Basic Color adjustment layer.
     #[serde(default)]
     pub basic_color: bool,
@@ -441,6 +444,7 @@ impl Default for Panels {
             brush_settings: false,
             brushes: false,
             retouch_ai: false,
+            face_reshape: false,
             basic_color: false,
             color_presets: false,
             character: false,
@@ -1313,6 +1317,9 @@ pub struct UiState {
     /// Retouch AI: tool selections/amounts, presets, batch folders and the last result layers.
     #[serde(default)]
     pub retouch_ai: crate::retouch_ai_panel::RetouchAiState,
+    /// Face Reshape: the 68 sliders, the open group, the preview layer and its status line.
+    #[serde(default)]
+    pub face_reshape: crate::face_reshape_panel::FaceReshapeState,
     /// Basic Color: the floating panel's last command error.
     #[serde(default)]
     pub basic_color: crate::basic_color_panel::BasicColorState,
@@ -1446,6 +1453,7 @@ impl Default for UiState {
             brush_tab: 0,
             brushes_panel: Default::default(),
             retouch_ai: Default::default(),
+            face_reshape: Default::default(),
             basic_color: Default::default(),
             color_presets: Default::default(),
             selection_mode: 0,
