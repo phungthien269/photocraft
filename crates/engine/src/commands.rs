@@ -1493,6 +1493,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::fill_key_cmds::specs());
     v.extend(crate::sample_cmds::specs());
     v.extend(crate::face_cmds::specs());
+    v.extend(crate::face_reshape_cmds::specs());
     v.extend(crate::sampler_cmds::specs());
     v.extend(crate::brush_key_cmds::specs());
     v.extend(crate::stamp_cmds::specs());
