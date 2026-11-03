@@ -72,6 +72,11 @@ pub(crate) mod text {
     pub const SAVED_SKIPPED: &str = "Saved preset “{name}”; skipped {count} unsupported layer(s).";
     pub const SAVE_FAILED: &str = "Save preset failed: {error}";
     pub const EDIT_FAILED: &str = "Preset edit failed: {error}";
+    pub const IMPORT_LUTS: &str = "Import LUT folder…";
+    pub const LUTS_IMPORTED: &str = "Imported {count} LUT preset(s) into “{group}”.";
+    pub const LUTS_IMPORTED_SKIPPED: &str = "Imported {count} LUT preset(s) into “{group}”; skipped {skipped}.";
+    pub const LUTS_IMPORT_FAILED: &str = "Import LUT folder failed: {error}";
+    pub const LUTS_NONE: &str = "No LUT files (.cube, .3dl, .look) found in that folder.";
 
     pub const BATCH: &str = "Apply to Images";
     pub const INPUT_FOLDER: &str = "Input folder";
@@ -123,6 +128,11 @@ pub(crate) mod text {
         SAVED_SKIPPED,
         SAVE_FAILED,
         EDIT_FAILED,
+        IMPORT_LUTS,
+        LUTS_IMPORTED,
+        LUTS_IMPORTED_SKIPPED,
+        LUTS_IMPORT_FAILED,
+        LUTS_NONE,
         BATCH,
         INPUT_FOLDER,
         OUTPUT_FOLDER,
@@ -338,9 +348,9 @@ fn preview_cache_id() -> egui::Id {
 /// One adjustment layer of a preset, rebuilt from its stored JSON. `None` for a kind this build
 /// cannot recreate; an unknown blend falls back to Normal, and opacity is clamped like `apply`.
 fn preview_layer(value: &Value, mode: photocraft_doc::ColorMode) -> Option<Layer> {
-    let kind = value.get("kind").and_then(Value::as_str).map(str::trim).filter(|k| !k.is_empty())?;
-    let params = value.get("params").unwrap_or(&Value::Null);
-    let adjustment = photocraft_engine::adjust_params::from_params(kind, params, None, mode).ok()?;
+    // A Color Lookup with an embedded LUT renders through its stored table; a damaged one falls
+    // back to the parameter-only adjustment, as presets saved before LUTs were kept always did.
+    let adjustment = photocraft_engine::presets::color::adjustment_from_layer(value, mode)?;
     let opacity = match value.get("opacity") {
         None | Some(Value::Null) => 1.0,
         Some(v) => (v.as_f64().filter(|o| o.is_finite())? as f32).clamp(0.0, 1.0),
@@ -569,6 +579,48 @@ fn apply_preset(app: &mut PhotocraftApp, name: &str) {
         }
         Err(error) => {
             let message = crate::i18n::fmt(tl!(text::APPLY_FAILED), &[("error", &error)]);
+            set_status(app, message, true);
+        }
+    }
+}
+
+/// Import every LUT file in `path` as one self-contained preset, then open the group it landed
+/// in. The engine owns the folder walk and parsing; the panel only reports and refreshes.
+fn import_luts_from_folder(app: &mut PhotocraftApp, path: &str) {
+    set_status(app, String::new(), false);
+    let params = json!({"path": path, "includeSubfolders": app.ui.color_presets.include_subfolders});
+    match app.run("color.presets.importLutFolder", params) {
+        Ok(value) => {
+            let imported = value.get("imported").and_then(Value::as_u64).unwrap_or(0);
+            let skipped = value.get("skipped").and_then(Value::as_u64).unwrap_or(0);
+            let group = value.get("group").and_then(Value::as_str).unwrap_or("LUTs").to_string();
+            if imported == 0 {
+                let first_error = value
+                    .get("errors")
+                    .and_then(Value::as_array)
+                    .and_then(|errors| errors.first())
+                    .and_then(|error| error.get("error"))
+                    .and_then(Value::as_str);
+                match first_error {
+                    Some(error) => {
+                        let message = crate::i18n::fmt(tl!(text::LUTS_IMPORT_FAILED), &[("error", error)]);
+                        set_status(app, message, true);
+                    }
+                    None => set_status(app, tl!(text::LUTS_NONE).into(), false),
+                }
+                return;
+            }
+            open_group(app, &group);
+            let count = imported.to_string();
+            let message = if skipped > 0 {
+                crate::i18n::fmt(tl!(text::LUTS_IMPORTED_SKIPPED), &[("count", &count), ("group", &group), ("skipped", &skipped.to_string())])
+            } else {
+                crate::i18n::fmt(tl!(text::LUTS_IMPORTED), &[("count", &count), ("group", &group)])
+            };
+            set_status(app, message, skipped > 0);
+        }
+        Err(error) => {
+            let message = crate::i18n::fmt(tl!(text::LUTS_IMPORT_FAILED), &[("error", &error)]);
             set_status(app, message, true);
         }
     }
@@ -887,6 +939,7 @@ fn handle_event(app: &mut PhotocraftApp, event: &Ev, library: &Library) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Save,
+    ImportLuts,
     PickInput,
     PickOutput,
     RunBatch,
@@ -899,6 +952,12 @@ enum Action {
 fn apply_action(app: &mut PhotocraftApp, action: Action) {
     match action {
         Action::Save => save_current(app),
+        Action::ImportLuts => {
+            let _ = app.ask_folder(|app, path| {
+                import_luts_from_folder(app, &path);
+                Ok(Value::Null)
+            });
+        }
         Action::PickInput => {
             let _ = app.ask_folder(|app, path| {
                 app.ui.color_presets.batch_input = path;
@@ -1214,6 +1273,11 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 if has_document && !can_save {
                     ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_LAYERS)).size(10.5).color(t.text_faint)).wrap());
                 }
+                ui.add_space(2.0);
+                if widgets::secondary_button(ui, tl!(text::IMPORT_LUTS), ui.available_width()).clicked() {
+                    actions.push(Action::ImportLuts);
+                }
+                ui.add_space(3.0);
                 if !app.ui.color_presets.status.is_empty() {
                     let color = if app.ui.color_presets.status_error { t.danger } else { t.text_dim };
                     ui.add(egui::Label::new(egui::RichText::new(&app.ui.color_presets.status).size(11.0).color(color)).wrap());
@@ -1265,6 +1329,7 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
     use photocraft_color::{Color, ColorMode, SampleType};
+    use photocraft_doc::Adjustment;
     use photocraft_geom::Size;
 
     use super::*;
@@ -1834,6 +1899,7 @@ mod tests {
         assert!(h.state().ui.panels.color_presets);
         assert!(h.query_all_by_label(text::OPEN_IMAGE).next().is_some(), "the no-document hint is shown");
         assert!(h.get_by_label(text::SAVE).accesskit_node().is_disabled(), "Save needs a document");
+        assert!(h.query_all_by_label(text::IMPORT_LUTS).next().is_some(), "LUT import is a library action, open to browsing");
         assert!(!h.get_by_label("Warm Portrait").accesskit_node().is_disabled(), "browsing still works");
     }
 
@@ -1887,6 +1953,98 @@ mod tests {
     fn library_item(layers: Value) -> LibraryItem {
         let mut library = parse_library(&json!({"groups": [{"name": "Test", "presets": [{"name": "Look", "layers": layers}]}]}));
         library.groups.remove(0).items.remove(0)
+    }
+
+    /// A 2×2×2 table that swaps red and blue (red varies fastest).
+    fn swap_lut_data() -> Vec<f32> {
+        let mut data = Vec::with_capacity(24);
+        for b in 0..2 {
+            for g in 0..2 {
+                for r in 0..2 {
+                    data.extend([b as f32, g as f32, r as f32]);
+                }
+            }
+        }
+        data
+    }
+
+    /// A valid `.cube` holding [`swap_lut_data`].
+    fn swap_cube(title: &str) -> String {
+        let mut text = format!("TITLE \"{title}\"\nLUT_3D_SIZE 2\n");
+        for b in 0..2 {
+            for g in 0..2 {
+                for r in 0..2 {
+                    text.push_str(&format!("{b} {g} {r}\n"));
+                }
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn import_lut_folder_adds_presets_and_reports_the_group() {
+        let root = std::env::temp_dir().join(format!("photocraft-ui-luts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp folder");
+        std::fs::write(root.join("Grade.cube"), swap_cube("Grade")).expect("valid LUT");
+        std::fs::write(root.join("bad.cube"), "not a cube").expect("invalid LUT");
+
+        let mut app = app();
+        import_luts_from_folder(&mut app, root.to_str().expect("temp path"));
+        assert_eq!(app.perf.last_command, "color.presets.importLutFolder");
+        assert!(app.ui.color_presets.status_error, "a skipped file is reported: {}", app.ui.color_presets.status);
+        assert!(app.ui.color_presets.status.contains("LUTs"), "{}", app.ui.color_presets.status);
+        assert!(app.ui.color_presets.status.contains("skipped 1"), "{}", app.ui.color_presets.status);
+        assert!(library_names(&app).contains(&"Grade".to_string()), "{:?}", library_names(&app));
+        let group = app.session.presets.color_presets.iter().find(|g| g.name == "LUTs").expect("the LUTs group");
+        assert_eq!(group.items.len(), 1, "the invalid file is skipped");
+        assert!(
+            app.ui.presets_ui.open_groups.contains(&format!("{PANEL}/LUTs")) || app.session.presets.color_presets.first().is_some_and(|g| g.name == "LUTs")
+        );
+        assert!(app.session.active_index().is_none(), "importing needs no document");
+
+        // A missing folder reports an error and adds nothing.
+        let before = library_names(&app).len();
+        import_luts_from_folder(&mut app, "/definitely/not/a/photocraft/folder");
+        assert!(app.ui.color_presets.status_error);
+        assert!(app.ui.color_presets.status.starts_with("Import LUT folder failed"), "{}", app.ui.color_presets.status);
+        assert_eq!(library_names(&app).len(), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn preview_renders_through_the_embedded_lut() {
+        let doc = synthetic_doc();
+        let data = swap_lut_data();
+        let item = library_item(json!([{
+            "kind": "colorLookup",
+            "name": "Lookup",
+            "params": {"interpolation": "trilinear"},
+            "opacity": 1.0,
+            "blend": "Normal",
+            "lut": {"name": "Swap", "size": 2, "data": data, "tetrahedral": true, "dither": false}
+        }]));
+        let built = preview_document(&doc, &item).expect("the preset builds a preview document");
+        let LayerContent::Adjustment(Adjustment::ColorLookup { name, lut, size, tetrahedral, .. }) = &built.layers[1].content else {
+            panic!("not a Color Lookup layer")
+        };
+        assert_eq!(name, "Swap");
+        assert_eq!(*size, 2);
+        assert!(*tetrahedral);
+        assert_eq!(lut.as_ref().map(|v| v.as_slice()), Some(data.as_slice()));
+        let preview = preview_image(&doc, &item, PREVIEW_SIDE).expect("a LUT preview");
+        let plain = photocraft_compose::render_reduced(&doc, 64, 48).to_rgba8();
+        let plain = egui::ColorImage::from_rgba_unmultiplied([plain.width as usize, plain.height as usize], &plain.pixels);
+        assert_ne!(preview.pixels, plain.pixels, "the card renders through the stored LUT");
+
+        // A damaged table falls back to the parameter-only lookup, which still previews.
+        let broken = library_item(json!([{
+            "kind": "colorLookup", "name": "Lookup", "params": {}, "opacity": 1.0, "blend": "Normal",
+            "lut": {"name": "Broken", "size": 2, "data": [0.0, 1.0]}
+        }]));
+        let built = preview_document(&doc, &broken).expect("the fallback preview builds");
+        let LayerContent::Adjustment(Adjustment::ColorLookup { lut, .. }) = &built.layers[1].content else { panic!("not a Color Lookup layer") };
+        assert!(lut.is_none(), "an invalid LUT falls back to the identity lookup");
     }
 
     #[test]

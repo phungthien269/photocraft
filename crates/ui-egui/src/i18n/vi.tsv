@@ -3897,6 +3897,11 @@ curves	Smooth	Làm mượt
 	Saved preset “{name}”; skipped {count} unsupported layer(s).	Đã lưu preset “{name}”; bỏ qua {count} lớp không hỗ trợ.
 	Save preset failed: {error}	Lưu preset thất bại: {error}
 	Preset edit failed: {error}	Sửa preset thất bại: {error}
+	Import LUT folder…	Nhập thư mục LUT…
+	Imported {count} LUT preset(s) into “{group}”.	Đã nhập {count} preset LUT vào “{group}”.
+	Imported {count} LUT preset(s) into “{group}”; skipped {skipped}.	Đã nhập {count} preset LUT vào “{group}”; bỏ qua {skipped}.
+	Import LUT folder failed: {error}	Nhập thư mục LUT thất bại: {error}
+	No LUT files (.cube, .3dl, .look) found in that folder.	Không tìm thấy tệp LUT (.cube, .3dl, .look) trong thư mục đó.
 	Apply to Images	Áp cho nhiều ảnh
 	Include subfolders	Gồm thư mục con
 	Keep files if cancelled, so I can resume	Giữ các tệp đã ghi khi hủy để có thể chạy tiếp.

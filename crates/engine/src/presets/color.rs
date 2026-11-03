@@ -2,12 +2,16 @@
 //! adjustment layers and applied as a new pass-through group.
 //!
 //! A preset keeps whole-image colour work only: the adjustment kind, the source layer name, the
-//! complete parameter set (`crate::adjust_params::to_params`), layer opacity and blend mode.
-//! Masks, painted pixels, effects, groups and every other layer kind are not part of a look.
+//! complete parameter set (`crate::adjust_params::to_params`), layer opacity and blend mode. A
+//! Color Lookup also keeps its whole LUT table, so a saved or imported look stays self-contained
+//! when the source file moves. Masks, painted pixels, effects, groups and every other layer kind
+//! are not part of a look.
 //! Applying a preset never edits existing layers: it inserts a new top-level group named
 //! `Preset • <name>` whose children are fresh adjustment layers, in one undo step.
 //!
 //! Built-in looks are our own (clean-room), each a single Basic Color layer.
+
+use std::sync::Arc;
 
 use photocraft_color::{BlendMode, ColorMode};
 use photocraft_doc::{Adjustment, Layer, LayerContent};
@@ -22,6 +26,8 @@ use crate::{EngineError, Result, Session};
 pub const BUILTIN_GROUP: &str = "PhotoCraft";
 /// Group a capture lands in when the caller names no group.
 pub const USER_GROUP: &str = "My Presets";
+/// Group an imported LUT lands in when the caller names no group.
+pub const LUT_GROUP: &str = "LUTs";
 
 /// A whole colour/tone look: adjustment layers in compositing order, bottom-to-top.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -45,11 +51,30 @@ pub struct ColorPresetLayer {
     pub opacity: f32,
     /// `BlendMode` serde name (`"Normal"`, `"Multiply"`, …).
     pub blend: String,
+    /// A self-contained Color Lookup table, so the look keeps working when its source file moves.
+    /// `None` for every other kind and for presets saved before LUTs were kept.
+    pub lut: Option<ColorPresetLut>,
+}
+
+/// A LUT stored inside a preset: the whole table, independent of the file it came from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorPresetLut {
+    /// The look label (the LUT file's name, as Color Lookup shows it).
+    pub name: String,
+    /// Edge length of the cubic table.
+    pub size: u32,
+    /// `size`³ × 3 red-fastest RGB values in 0..=1 (`((b·size + g)·size + r)·3`).
+    pub data: Vec<f32>,
+    /// Tetrahedral instead of trilinear interpolation.
+    pub tetrahedral: bool,
+    /// Ordered dither to hide banding.
+    pub dither: bool,
 }
 
 impl Default for ColorPresetLayer {
     fn default() -> Self {
-        ColorPresetLayer { kind: String::new(), name: String::new(), params: json!({}), opacity: 1.0, blend: "Normal".into() }
+        ColorPresetLayer { kind: String::new(), name: String::new(), params: json!({}), opacity: 1.0, blend: "Normal".into(), lut: None }
     }
 }
 
@@ -64,7 +89,7 @@ impl Named for ColorPreset {
 }
 
 impl ColorPreset {
-    /// The list/result JSON shape: `{name, layers:[{kind,name,params,opacity,blend}]}`.
+    /// The list/result JSON shape: `{name, layers:[{kind,name,params,opacity,blend,lut}]}`.
     pub fn to_json(&self) -> Value {
         json!({
             "name": self.name,
@@ -81,15 +106,71 @@ impl ColorPresetLayer {
             "params": self.params,
             "opacity": self.opacity,
             "blend": self.blend,
+            "lut": self.lut,
         })
     }
+
+    /// Rebuild this layer's adjustment. A stored LUT is used as-is, never re-read from disk.
+    pub fn adjustment(&self, mode: ColorMode) -> Result<Adjustment> {
+        if let Some(lut) = &self.lut {
+            if self.kind.trim() != "colorLookup" {
+                return Err(bad("color.presets", "an embedded LUT only belongs to a colorLookup layer"));
+            }
+            return lut.adjustment(&self.name);
+        }
+        crate::adjust_params::from_params(self.kind.trim(), &self.params, None, mode)
+    }
+}
+
+impl ColorPresetLut {
+    /// A Color Lookup adjustment carrying this exact table. The size and data length are checked
+    /// here, so a damaged inline preset fails before the document changes.
+    fn adjustment(&self, layer_name: &str) -> Result<Adjustment> {
+        const CMD: &str = "color.presets";
+        let size = self.size as usize;
+        if !(2..=photocraft_cms::lutfile::MAX_SIZE).contains(&size) {
+            return Err(bad(CMD, format!("unsupported embedded LUT size {}", self.size)));
+        }
+        let expected =
+            size.checked_pow(3).and_then(|entries| entries.checked_mul(3)).ok_or_else(|| bad(CMD, format!("unsupported embedded LUT size {}", self.size)))?;
+        if self.data.len() != expected {
+            return Err(bad(CMD, format!("embedded LUT size {size} needs {expected} values, found {}", self.data.len())));
+        }
+        if !self.data.iter().all(|v| v.is_finite()) {
+            return Err(bad(CMD, "embedded LUT has a non-finite value"));
+        }
+        let name = if !self.name.trim().is_empty() {
+            self.name.trim().to_string()
+        } else if !layer_name.trim().is_empty() {
+            layer_name.trim().to_string()
+        } else {
+            "Color Lookup".into()
+        };
+        Ok(Adjustment::ColorLookup { name, lut: Some(Arc::new(self.data.clone())), size: self.size, tetrahedral: self.tetrahedral, dither: self.dither })
+    }
+}
+
+/// The adjustment a preset layer's list JSON rebuilds, using an embedded LUT when it is sound.
+/// `None` when the layer itself cannot be recreated (unknown kind, bad params); a damaged LUT
+/// falls back to the parameter-only form, so a card preview still draws.
+pub fn adjustment_from_layer(value: &Value, mode: ColorMode) -> Option<Adjustment> {
+    let layer: ColorPresetLayer = serde_json::from_value(value.clone()).ok()?;
+    if layer.kind.trim().is_empty() {
+        return None;
+    }
+    if layer.lut.is_some()
+        && let Ok(adjustment) = layer.adjustment(mode)
+    {
+        return Some(adjustment);
+    }
+    crate::adjust_params::from_params(layer.kind.trim(), &layer.params, None, mode).ok()
 }
 
 /// The five starter looks, all our own. Each is one Basic Color layer at full opacity, Normal.
 pub fn builtin() -> Vec<Group<ColorPreset>> {
     let look = |name: &str, params: Value| ColorPreset {
         name: name.into(),
-        layers: vec![ColorPresetLayer { kind: "basicColor".into(), name: "Basic Color".into(), params, opacity: 1.0, blend: "Normal".into() }],
+        layers: vec![ColorPresetLayer { kind: "basicColor".into(), name: "Basic Color".into(), params, opacity: 1.0, blend: "Normal".into(), lut: None }],
     };
     vec![Group::new(
         BUILTIN_GROUP,
@@ -181,7 +262,7 @@ fn ready_layers(preset: &ColorPreset, mode: ColorMode, cmd: &str) -> Result<Vec<
             if kind.is_empty() {
                 return Err(bad(cmd, format!("layer {n} has no adjustment kind")));
             }
-            let adjustment = crate::adjust_params::from_params(kind, &layer.params, None, mode).map_err(|e| bad(cmd, format!("layer {n} ({kind}): {e}")))?;
+            let adjustment = layer.adjustment(mode).map_err(|e| bad(cmd, format!("layer {n} ({kind}): {e}")))?;
             if !layer.opacity.is_finite() {
                 return Err(bad(cmd, format!("layer {n} ({kind}): opacity is not a number")));
             }
@@ -231,6 +312,14 @@ fn new_preset(s: &mut Session, p: &Value) -> Result<Value> {
                 params: crate::adjust_params::to_params(adjustment),
                 opacity: layer.opacity.clamp(0.0, 1.0),
                 blend: blend_name(layer.blend),
+                // A Color Lookup keeps its whole table: the parameters alone would rebuild an
+                // identity lookup once the source file is gone.
+                lut: match adjustment {
+                    Adjustment::ColorLookup { name, lut: Some(data), size, tetrahedral, dither } => {
+                        Some(ColorPresetLut { name: name.clone(), size: *size, data: data.as_ref().clone(), tetrahedral: *tetrahedral, dither: *dither })
+                    }
+                    _ => None,
+                },
             });
         }
     }
@@ -249,6 +338,169 @@ fn new_preset(s: &mut Session, p: &Value) -> Result<Value> {
     let count = s.presets.color_presets[gi].items.last().map_or(0, |p| p.layers.len());
     s.presets_changed();
     Ok(json!({"name": name, "group": group, "layers": count, "skipped": skipped}))
+}
+
+/// Image › Adjustments › Color Lookup folder import: one self-contained preset per LUT file.
+/// Native only: the web build has no file system.
+fn import_lut_folder(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "color.presets.importLutFolder";
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (s, p);
+        Err(bad(CMD, "importing a LUT folder is not available on the web (no file system)"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        import_lut_folder_native(s, p, CMD)
+    }
+}
+
+/// Subfolders below the import folder are walked at most this deep.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_LUT_DEPTH: usize = 32;
+/// An import lists at most this many LUT files; a larger tree is an error, not a partway import.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_LUT_FILES: usize = 4096;
+/// The LUT files an import holds at once, so a folder of very large tables cannot exhaust memory.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_LUT_BYTES: u64 = 256 * 1024 * 1024;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn import_lut_folder_native(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
+    let path = req_str(p, "path", cmd)?.to_string();
+    let group = match p.get("group") {
+        None | Some(Value::Null) => LUT_GROUP.to_string(),
+        Some(Value::String(name)) if !name.trim().is_empty() => name.trim().to_string(),
+        Some(Value::String(_)) => LUT_GROUP.to_string(),
+        Some(_) => return Err(bad(cmd, "`group` must be a string")),
+    };
+    let recurse = match p.get("includeSubfolders") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(bad(cmd, "`includeSubfolders` must be true or false")),
+    };
+    let root = std::path::Path::new(&path);
+    if !root.is_dir() {
+        return Err(bad(cmd, format!("{path}: not a folder")));
+    }
+    // Read and parse everything before touching the library, so a failed walk adds nothing.
+    let candidates = lut_files(root, recurse, cmd)?;
+    let mut parsed = Vec::new();
+    let mut errors = Vec::new();
+    let mut total_bytes = 0u64;
+    for (shown, file) in candidates {
+        total_bytes = total_bytes.saturating_add(std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0));
+        if total_bytes > MAX_LUT_BYTES {
+            return Err(bad(cmd, format!("the folder's LUT files exceed {} MiB", MAX_LUT_BYTES / (1024 * 1024))));
+        }
+        let bytes = match std::fs::read(&file) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                errors.push(json!({"file": shown, "error": format!("cannot read: {e}")}));
+                continue;
+            }
+        };
+        let file_name = file.file_name().and_then(|n| n.to_str()).unwrap_or(&shown).to_string();
+        let lut = match photocraft_cms::lutfile::parse(&file_name, &bytes) {
+            Ok(lut) => lut,
+            Err(e) => {
+                errors.push(json!({"file": shown, "error": e.0}));
+                continue;
+            }
+        };
+        // Color Lookup applies the plain 0..1 domain; a custom one would silently shift the look.
+        if !lut.domain_is_default() {
+            errors.push(json!({
+                "file": shown,
+                "error": format!("DOMAIN_MIN {:?} / DOMAIN_MAX {:?} is not supported yet", lut.domain_min, lut.domain_max),
+            }));
+            continue;
+        }
+        let stem = file.file_stem().and_then(|n| n.to_str()).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| file_name.clone());
+        parsed.push((stem.clone(), ColorPresetLut { name: stem, size: lut.size as u32, data: lut.data, tetrahedral: false, dither: false }));
+    }
+    let imported = parsed.len();
+    let skipped = errors.len();
+    if imported > 0 {
+        let gi = group_index(&mut s.presets.color_presets, Some(&group));
+        for (stem, lut) in parsed {
+            // Never overwrite an existing preset: the next free suffix keeps names addressable.
+            let name = unique_name(&s.presets.color_presets, &stem);
+            s.presets.color_presets[gi].items.push(ColorPreset {
+                name,
+                layers: vec![ColorPresetLayer {
+                    kind: "colorLookup".into(),
+                    name: String::new(),
+                    params: json!({"interpolation": "trilinear", "dither": false}),
+                    opacity: 1.0,
+                    blend: "Normal".into(),
+                    lut: Some(lut),
+                }],
+            });
+        }
+        s.presets_changed();
+    }
+    Ok(json!({"group": group, "imported": imported, "skipped": skipped, "errors": errors}))
+}
+
+/// The LUT files under `root`, as `(path relative to root, full path)` sorted by name. With
+/// `recurse` the tree is walked depth first to [`MAX_LUT_DEPTH`], each folder once (symlink loops
+/// are not followed twice), and more than [`MAX_LUT_FILES`] is an error.
+#[cfg(not(target_arch = "wasm32"))]
+fn lut_files(root: &std::path::Path, recurse: bool, cmd: &str) -> Result<Vec<(String, std::path::PathBuf)>> {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn is_lut(path: &std::path::Path) -> bool {
+        path.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "cube" | "3dl" | "look"))
+    }
+
+    let mut seen = HashSet::new();
+    if let Ok(canonical) = std::fs::canonicalize(root) {
+        seen.insert(canonical);
+    }
+    let mut out = Vec::new();
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    while let Some((folder, depth)) = stack.pop() {
+        let entries = match std::fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            // The top folder must be readable; an unreadable subfolder is skipped.
+            Err(e) if depth == 0 => return Err(bad(cmd, format!("{}: {e}", folder.display()))),
+            Err(_) => continue,
+        };
+        let mut files = Vec::new();
+        let mut subs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if recurse {
+                    subs.push(path);
+                }
+            } else if is_lut(&path) {
+                files.push(path);
+            }
+        }
+        files.sort();
+        for file in files {
+            if out.len() >= MAX_LUT_FILES {
+                return Err(bad(cmd, format!("more than {MAX_LUT_FILES} LUT files")));
+            }
+            let shown = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().replace('\\', "/");
+            out.push((shown, file));
+        }
+        if !recurse || depth >= MAX_LUT_DEPTH {
+            continue;
+        }
+        subs.sort();
+        // Pushed in reverse so the stack pops them in name order.
+        for sub in subs.into_iter().rev() {
+            let Ok(canonical) = std::fs::canonicalize(&sub) else { continue };
+            if seen.insert(canonical) {
+                stack.push((sub, depth + 1));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The preset named by `"preset"`: a library name (optionally narrowed by `"group"`) or an
@@ -324,7 +576,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Color Presets",
             menu: &[],
             shortcut: None,
-            params: "{} → {groups:[{name,presets:[{name,layers:[{kind,name,params,opacity,blend}]}]}]}",
+            params: "{} → {groups:[{name,presets:[{name,layers:[{kind,name,params,opacity,blend,lut}]}]}]} (lut is null or {name,size,data,tetrahedral,dither}, a self-contained Color Lookup table)",
             enabled: always,
             run: list,
             journal: false,
@@ -344,9 +596,19 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Apply Color Preset",
             menu: &[],
             shortcut: None,
-            params: r##"{"preset":name|{name,layers:[{kind,name,params,opacity,blend}]},"group":name? (narrows a library lookup)} → {name,group,layers} (one new top-level Pass Through group at the top, one undo step; existing layers are never modified)"##,
+            params: r##"{"preset":name|{name,layers:[{kind,name,params,opacity,blend,lut}]},"group":name? (narrows a library lookup)} → {name,group,layers} (one new top-level Pass Through group at the top, one undo step; existing layers are never modified; an embedded lut rebuilds its Color Lookup table directly)"##,
             enabled: has_doc,
             run: apply,
+            journal: true,
+        },
+        CommandSpec {
+            id: "color.presets.importLutFolder",
+            label: "Import LUT folder…",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"path":folder,"group":name?="LUTs" (created when missing),"includeSubfolders":bool=false (walk at most 32 levels and 4096 files)} → {group,imported,skipped,errors:[{file,error}]} (one preset per .cube/.3dl/.look file, named from the file stem and kept unique across the library; each is one Color Lookup layer with a self-contained copy of the table; damaged files, custom input domains and unreadable files are reported and skipped; native only)"##,
+            enabled: always,
+            run: import_lut_folder,
             journal: true,
         },
         CommandSpec {

@@ -978,7 +978,7 @@ fn color_presets_new_captures_visible_adjustments_bottom_to_top() {
     for l in &preset.layers {
         let v = l.to_json();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["blend", "kind", "name", "opacity", "params"]);
+        assert_eq!(keys, ["blend", "kind", "lut", "name", "opacity", "params"]);
     }
 
     // Names stay unique across all groups, while the requested group is honoured.
@@ -1114,6 +1114,192 @@ fn color_presets_carry_the_basic_color_mixer() {
     assert_eq!(*saturation, 20.0);
     assert_eq!((*hsl_hue, *hsl_sat, *hsl_lum), ([0.0; 8], [0.0; 8], [0.0; 8]));
     assert_eq!(r["name"], "Mixer Look");
+}
+
+/// A 2×2×2 table that swaps red and blue (red varies fastest: `((b·2 + g)·2 + r)·3`).
+fn swap_lut_data() -> Vec<f32> {
+    let mut data = Vec::with_capacity(24);
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                data.extend([b as f32, g as f32, r as f32]);
+            }
+        }
+    }
+    data
+}
+
+/// A valid `.cube` holding [`swap_lut_data`].
+fn swap_cube(title: &str) -> String {
+    let mut text = format!("TITLE \"{title}\"\nLUT_3D_SIZE 2\n");
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                text.push_str(&format!("{b} {g} {r}\n"));
+            }
+        }
+    }
+    text
+}
+
+#[test]
+fn color_presets_capture_apply_and_persist_an_embedded_lut() {
+    let mut s = color_session();
+    let lut_data = swap_lut_data();
+    let lookup = Adjustment::ColorLookup { name: "Swap".into(), lut: Some(Arc::new(lut_data.clone())), size: 2, tetrahedral: true, dither: false };
+    push_layer(&mut s, adjustment_layer("Lookup", lookup));
+    let before = color_pixel(&s, 6, 6);
+    let steps = history_steps(&s);
+    s.execute("color.presets.new", json!({"name": "Swap Look"})).unwrap();
+    assert_eq!(history_steps(&s), steps, "a capture never edits the document");
+
+    let preset = s.presets.color_presets.iter().flat_map(|g| &g.items).find(|p| p.name == "Swap Look").expect("captured preset");
+    let layer = &preset.layers[0];
+    assert_eq!(layer.kind, "colorLookup");
+    let embedded = layer.lut.as_ref().expect("the LUT is captured");
+    assert_eq!(embedded.name, "Swap");
+    assert_eq!(embedded.size, 2);
+    assert_eq!(embedded.data, lut_data);
+    assert!(embedded.tetrahedral);
+    assert!(!embedded.dither);
+
+    // The list JSON carries the table, so a card preview can render through it.
+    let list = s.execute("color.presets.list", json!({})).unwrap();
+    let group = list["groups"].as_array().unwrap().iter().find(|g| g["name"] == "My Presets").expect("capture group");
+    let listed = group["presets"].as_array().unwrap().iter().find(|p| p["name"] == "Swap Look").expect("listed preset");
+    assert_eq!(listed["layers"][0]["lut"]["size"], json!(2));
+    assert_eq!(listed["layers"][0]["lut"]["data"].as_array().map(Vec::len), Some(24));
+
+    s.execute("color.presets.apply", json!({"preset": "Swap Look"})).unwrap();
+    let d = s.active().unwrap();
+    let child = &d.doc.layers.last().unwrap().children().unwrap()[0];
+    let LayerContent::Adjustment(Adjustment::ColorLookup { name, lut, size, tetrahedral, dither }) = &child.content else { panic!("not a Color Lookup layer") };
+    assert_eq!(name, "Swap");
+    assert_eq!(lut.as_ref().map(|v| v.as_slice()), Some(lut_data.as_slice()), "apply uses the stored table, not an identity lookup");
+    assert_eq!((*size, *tetrahedral, *dither), (2, true, false));
+    let after = color_pixel(&s, 6, 6);
+    assert!((after[0] - before[2]).abs() < 0.02 && (after[2] - before[0]).abs() < 0.02, "red and blue swap in the composite: {before:?} -> {after:?}");
+
+    // The preferences document keeps the table across a reload.
+    let saved = s.presets.to_json(&s);
+    let mut t = Session::new();
+    t.load_presets_json(saved);
+    let loaded = t.presets.color_presets.iter().flat_map(|g| &g.items).find(|p| p.name == "Swap Look").expect("reloaded preset");
+    assert_eq!(loaded.layers[0].lut.as_ref().map(|l| l.data.as_slice()), Some(lut_data.as_slice()));
+
+    // An inline preset carries and applies the table too.
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute(
+        "color.presets.apply",
+        json!({"preset": {"name": "Inline LUT", "layers": [{
+            "kind": "colorLookup", "name": "Lookup", "params": {"interpolation": "trilinear"},
+            "opacity": 1.0, "blend": "Normal",
+            "lut": {"name": "Inline Swap", "size": 2, "data": lut_data, "tetrahedral": false, "dither": true},
+        }]}}),
+    )
+    .unwrap();
+    let d = s.active().unwrap();
+    let child = &d.doc.layers.last().unwrap().children().unwrap()[0];
+    let LayerContent::Adjustment(Adjustment::ColorLookup { name, lut, dither, .. }) = &child.content else { panic!("not a Color Lookup layer") };
+    assert_eq!(name, "Inline Swap");
+    assert_eq!(lut.as_ref().map(|v| v.as_slice()), Some(swap_lut_data().as_slice()));
+    assert!(*dither);
+}
+
+#[test]
+fn color_presets_import_a_lut_folder_as_self_contained_presets() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("Rose.cube"), swap_cube("Rose")).unwrap();
+    std::fs::write(root.join("Teal.cube"), swap_cube("Teal")).unwrap();
+    std::fs::write(root.join("broken.cube"), "LUT_3D_SIZE oops\n").unwrap();
+    std::fs::write(root.join("readme.txt"), "not a LUT").unwrap();
+
+    let mut s = color_session();
+    let rev = s.presets.rev;
+    let r = s.execute("color.presets.importLutFolder", json!({"path": root.to_str().unwrap()})).unwrap();
+    assert_eq!(r["group"], "LUTs");
+    assert_eq!(r["imported"], 2);
+    assert_eq!(r["skipped"], 1);
+    let errors = r["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0]["file"].as_str().unwrap().ends_with("broken.cube"), "{r}");
+    assert!(!errors[0]["error"].as_str().unwrap().is_empty());
+    assert_eq!(s.presets.rev, rev + 1, "an import bumps the preset revision");
+
+    let group = s.presets.color_presets.iter().find(|g| g.name == "LUTs").expect("the default import group");
+    let names: Vec<&str> = group.items.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Rose", "Teal"], "one preset per file, sorted by name");
+    for preset in &group.items {
+        assert_eq!(preset.layers.len(), 1);
+        assert_eq!(preset.layers[0].kind, "colorLookup");
+        let lut = preset.layers[0].lut.as_ref().expect("a self-contained table");
+        assert_eq!(lut.name, preset.name);
+        assert_eq!(lut.size, 2);
+        assert_eq!(lut.data, swap_lut_data());
+        assert!(!lut.tetrahedral && !lut.dither);
+    }
+
+    // A second import never overwrites: the next free suffix keeps every name unique.
+    let r = s.execute("color.presets.importLutFolder", json!({"path": root.to_str().unwrap()})).unwrap();
+    assert_eq!(r["imported"], 2);
+    let all: Vec<&str> = s.presets.color_presets.iter().flat_map(|g| &g.items).map(|p| p.name.as_str()).collect();
+    for name in ["Rose", "Rose 2", "Teal", "Teal 2"] {
+        assert_eq!(all.iter().filter(|n| **n == name).count(), 1, "{name}: {all:?}");
+    }
+
+    // The imported preset applies through its stored table.
+    let before = color_pixel(&s, 6, 6);
+    s.execute("color.presets.apply", json!({"preset": "Rose"})).unwrap();
+    let after = color_pixel(&s, 6, 6);
+    assert!((after[0] - before[2]).abs() < 0.02 && (after[2] - before[0]).abs() < 0.02, "the imported look renders: {before:?} -> {after:?}");
+    let d = s.active().unwrap();
+    let child = &d.doc.layers.last().unwrap().children().unwrap()[0];
+    let LayerContent::Adjustment(Adjustment::ColorLookup { name, lut, size, .. }) = &child.content else { panic!("not a Color Lookup layer") };
+    assert_eq!((name.as_str(), *size), ("Rose", 2));
+    assert_eq!(lut.as_ref().map(|v| v.as_slice()), Some(swap_lut_data().as_slice()));
+
+    // The tables survive the preferences round-trip.
+    let saved = s.presets.to_json(&s);
+    let mut t = Session::new();
+    t.load_presets_json(saved);
+    let group = t.presets.color_presets.iter().find(|g| g.name == "LUTs").expect("reloaded group");
+    assert_eq!(group.items.len(), 4);
+    assert!(group.items.iter().all(|p| p.layers[0].lut.as_ref().is_some_and(|l| l.data.len() == 24)));
+}
+
+#[test]
+fn color_presets_import_walks_subfolders_and_validates_params() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let nested = root.join("nested");
+    let deeper = nested.join("deeper");
+    std::fs::create_dir_all(&deeper).unwrap();
+    std::fs::write(root.join("Top.cube"), swap_cube("Top")).unwrap();
+    std::fs::write(nested.join("Nested.cube"), swap_cube("Nested")).unwrap();
+    std::fs::write(nested.join("ignored.txt"), "ignored").unwrap();
+    std::fs::write(deeper.join("Deep.CUBE"), swap_cube("Deep")).unwrap();
+    let path = root.to_str().unwrap().to_string();
+    let mut s = Session::new();
+
+    let r = s.execute("color.presets.importLutFolder", json!({"path": path, "includeSubfolders": false})).unwrap();
+    assert_eq!(r["imported"], 1, "the default does not walk subfolders: {r}");
+    let r = s.execute("color.presets.importLutFolder", json!({"path": path, "includeSubfolders": true, "group": " Deep Looks "})).unwrap();
+    assert_eq!(r["group"], "Deep Looks");
+    assert_eq!(r["imported"], 3);
+    assert_eq!(r["skipped"], 0);
+    let names: Vec<&str> = s.presets.color_presets.iter().find(|g| g.name == "Deep Looks").unwrap().items.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Top 2", "Nested", "Deep"], "the folder first, then its subfolders; existing names stay unique");
+
+    // Bad parameters are graceful errors; none of them adds a preset.
+    let before = s.presets.color_presets.clone();
+    for p in [json!({}), json!({"path": 7}), json!({"path": "   "}), json!({"path": path, "includeSubfolders": "yes"}), json!({"path": path, "group": 7})] {
+        assert!(s.execute("color.presets.importLutFolder", p.clone()).is_err(), "{p}");
+    }
+    let file = root.join("Top.cube");
+    assert!(s.execute("color.presets.importLutFolder", json!({"path": file.to_str().unwrap()})).is_err(), "a file is not a folder");
+    assert!(s.execute("color.presets.importLutFolder", json!({"path": root.join("missing").to_str().unwrap()})).is_err());
+    assert_eq!(s.presets.color_presets, before, "failed imports change nothing");
 }
 
 #[test]
