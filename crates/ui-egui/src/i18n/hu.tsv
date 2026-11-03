@@ -4190,6 +4190,7 @@ cameraRaw	Yellow	Sárga
 	Basic Color: Auto-select Face	Basic Color: Arc automatikus kijelölése
 	Basic Color: Scan Faces	Basic Color: Arcok beolvasása
 	Basic Color: Show/Hide Selection	Basic Color: Kijelölés megjelenítése/elrejtése
+	Basic Color: Erase Region	Basic Color: Terület törlése
 	Color Presets: Save Current Look	Színelőbeállítások: Jelenlegi megjelenés mentése
 	Color Presets: Apply Selected Preset	Színelőbeállítások: Kijelölt előbeállítás alkalmazása
 	Color Presets: Run Batch	Színelőbeállítások: Köteg futtatása

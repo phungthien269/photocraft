@@ -29,9 +29,10 @@ pub const WIDTH: f32 = 352.0;
 const HEADER_HEIGHT: f32 = 43.0;
 
 /// The height of the panel's body: the mask controls, the Basic/Color Mixer tabs, the three
-/// sections and the ten one-line Basic sliders (about 580 points). The body is this tall when the
-/// window has the room for it, and shorter — scrolling, never clipping — when it has not.
-pub const BODY_HEIGHT: f32 = 600.0;
+/// sections and the ten one-line Basic sliders. In English the paint row wraps, keeping Add to
+/// region and Erase region together on a second line. The body is this tall when the window has
+/// the room for it, and shorter — scrolling, never clipping — when it has not.
+pub const BODY_HEIGHT: f32 = 632.0;
 
 /// Headroom on top of [`BODY_HEIGHT`], so that a small change in the panel's content (the face-key
 /// hint line) does not start the body scrolling.
@@ -68,6 +69,7 @@ pub(crate) mod text {
     pub const NO_PIXEL_MASK: &str = "No pixel mask yet. Apply to the whole image or auto-select a face; then paint to narrow it.";
     pub const PAINT_NEW_REGION: &str = "Paint a new region";
     pub const ADD_TO_REGION: &str = "Add to region";
+    pub const ERASE_REGION: &str = "Erase region";
     pub const AUTO_FACE: &str = "Auto-select face";
     pub const SCAN_FACES: &str = "Scan faces";
     pub const CANCEL: &str = "Cancel";
@@ -124,6 +126,7 @@ pub(crate) mod text {
         NO_PIXEL_MASK,
         PAINT_NEW_REGION,
         ADD_TO_REGION,
+        ERASE_REGION,
         AUTO_FACE,
         SCAN_FACES,
         CANCEL,
@@ -299,6 +302,7 @@ enum Action {
     Reset { layer: LayerId },
     PaintNewRegion { layer: LayerId },
     AddToRegion { layer: LayerId },
+    EraseRegion { layer: LayerId },
     AutoFace { layer: LayerId, choice: usize, coverage: FaceCoverage },
     ScanFaces { layer: LayerId },
     FaceSelectionChanged,
@@ -318,14 +322,16 @@ fn failed(app: &mut PhotocraftApp, template: &str, error: &str) {
 }
 
 /// Select the Brush with the layer mask targeted and white/black foreground/background, so a
-/// stroke reveals the adjustment. The colours are set after [`PhotocraftApp::sync_mask_targets`],
-/// which brings back the mask's own colour pair and could otherwise undo the choice.
-fn paint_setup(app: &mut PhotocraftApp) {
+/// stroke reveals the adjustment; with `erase`, black over white, so a stroke hides it. The
+/// colours are set after [`PhotocraftApp::sync_mask_targets`], which brings back the mask's own
+/// colour pair and could otherwise undo the choice.
+fn paint_setup(app: &mut PhotocraftApp, erase: bool) {
     crate::tool_memory::select(app, crate::state::Tool::Brush);
     app.ui.mask_target = true;
     app.ui.vector_mask_target = false;
     app.sync_mask_targets();
-    if let Err(error) = app.run("tools.setColors", json!({"foreground": "#ffffff", "background": "#000000"})) {
+    let (foreground, background) = if erase { ("#000000", "#ffffff") } else { ("#ffffff", "#000000") };
+    if let Err(error) = app.run("tools.setColors", json!({"foreground": foreground, "background": background})) {
         failed(app, text::MASK_FAILED, &error);
     }
 }
@@ -342,6 +348,7 @@ struct FaceTips {
     auto_face: String,
     scan_faces: String,
     selection: String,
+    erase_region: String,
 }
 
 fn face_tips(app: &PhotocraftApp, overlay: bool) -> FaceTips {
@@ -349,6 +356,7 @@ fn face_tips(app: &PhotocraftApp, overlay: bool) -> FaceTips {
         auto_face: crate::shortcuts::tip_label(app, text::AUTO_FACE, "basicColor.autoFace"),
         scan_faces: crate::shortcuts::tip_label(app, text::SCAN_FACES, "basicColor.scanFaces"),
         selection: crate::shortcuts::tip_label(app, if overlay { text::HIDE_SELECTION } else { text::SHOW_SELECTION }, "basicColor.toggleSelection"),
+        erase_region: crate::shortcuts::tip_label(app, text::ERASE_REGION, "basicColor.eraseRegion"),
     }
 }
 
@@ -655,11 +663,15 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
                 failed(app, text::MASK_FAILED, &error);
                 return;
             }
-            paint_setup(app);
+            paint_setup(app, false);
             show_selection(app, layer);
         }
         Action::AddToRegion { layer } => {
-            paint_setup(app);
+            paint_setup(app, false);
+            show_selection(app, layer);
+        }
+        Action::EraseRegion { layer } => {
+            paint_setup(app, true);
             show_selection(app, layer);
         }
         Action::AutoFace { layer, choice, coverage } => start_face_job(app, layer, FaceJobKind::Apply, choice, coverage),
@@ -829,8 +841,14 @@ fn mask_controls(
         if widgets::secondary_button(ui, tl!(text::PAINT_NEW_REGION), 0.0).clicked() {
             actions.push(Action::PaintNewRegion { layer: info.id });
         }
+    });
+    // Add and Erase share a row, so Erase is always next to Add.
+    ui.horizontal(|ui| {
         if widgets::secondary_button(ui, tl!(text::ADD_TO_REGION), 0.0).clicked() {
             actions.push(Action::AddToRegion { layer: info.id });
+        }
+        if widgets::secondary_button(ui, tl!(text::ERASE_REGION), 0.0).on_hover_text(tips.erase_region.as_str()).clicked() {
+            actions.push(Action::EraseRegion { layer: info.id });
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -915,6 +933,7 @@ pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, St
         "basicColor.autoFace" => "autoFace",
         "basicColor.scanFaces" => "scanFaces",
         "basicColor.toggleSelection" => "toggleSelection",
+        "basicColor.eraseRegion" => "eraseRegion",
         _ => return None,
     };
     app.ui.panels.basic_color = true;
@@ -940,6 +959,15 @@ pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, St
                     set_status(&mut app.ui.basic_color, message.to_string(), false);
                 }
                 Err(error) => failed(app, text::MASK_FAILED, &error),
+            }
+        }
+        "eraseRegion" => {
+            if !info.has_mask {
+                // Without a pixel mask the brush would paint the layer itself, not remove coverage.
+                set_status(&mut app.ui.basic_color, tl!(text::NO_PIXEL_MASK).to_string(), true);
+            } else {
+                paint_setup(app, true);
+                show_selection(app, info.id);
             }
         }
         _ => return None,
@@ -1032,6 +1060,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     // Color Presets lives in its own window; this only opens it, never toggles it off.
                     if widgets::compact_button(ui, tl!(text::PRESETS), 20.0).clicked() {
                         app.ui.panels.color_presets = true;
+                    }
+                    if crate::prefs_ui::shortcuts_button(ui) {
+                        crate::prefs_ui::open_shortcuts_filtered(app, text::TITLE);
                     }
                 });
             });
@@ -1493,12 +1524,16 @@ mod tests {
         assert!(app.ui.panels.basic_color);
     }
 
-    /// The three panel actions work as commands (Window › Basic Color and Edit › Keyboard
+    /// The four panel actions work as commands (Window › Basic Color and Edit › Keyboard
     /// Shortcuts): each shows the panel and reports its result, with or without a document.
     #[test]
     fn menu_commands_open_the_panel_and_run_their_action() {
-        const ACTIONS: [(&str, &str); 3] =
-            [("basicColor.autoFace", "autoFace"), ("basicColor.scanFaces", "scanFaces"), ("basicColor.toggleSelection", "toggleSelection")];
+        const ACTIONS: [(&str, &str); 4] = [
+            ("basicColor.autoFace", "autoFace"),
+            ("basicColor.scanFaces", "scanFaces"),
+            ("basicColor.toggleSelection", "toggleSelection"),
+            ("basicColor.eraseRegion", "eraseRegion"),
+        ];
         let ctx = egui::Context::default();
         let mut app = app();
         for (id, action) in ACTIONS {
@@ -1561,6 +1596,21 @@ mod tests {
         let st = app.session.active().expect("document");
         assert_eq!(photocraft_engine::mask_view_cmds::current(st), None);
         assert_eq!(app.ui.basic_color.status, text::SELECTION_HIDDEN);
+
+        // Erase region prepares the same mask painting with the colours reversed, so a stroke
+        // removes mask coverage, and shows the selection overlay again.
+        let value = crate::menus::invoke(&mut app, &ctx, "basicColor.eraseRegion", json!({})).expect("erase region");
+        assert_eq!(value["action"], "eraseRegion");
+        assert_eq!(app.ui.tool, crate::state::Tool::Brush);
+        assert!(app.ui.mask_target && !app.ui.vector_mask_target);
+        assert_eq!(app.session.tools.foreground, [0.0, 0.0, 0.0, 1.0], "black foreground erases");
+        assert_eq!(app.session.tools.background, [1.0, 1.0, 1.0, 1.0], "white background");
+        let st = app.session.active().expect("document");
+        assert_eq!(
+            photocraft_engine::mask_view_cmds::current(st).map(|view| view.mode),
+            Some(photocraft_engine::mask_view_cmds::MaskViewMode::Overlay),
+            "the erase command shows the selection overlay"
+        );
     }
 
     /// The new commands are listed by Edit › Keyboard Shortcuts with their defaults, the
@@ -1570,10 +1620,11 @@ mod tests {
         let mut app = app();
         let items = crate::prefs_ui::shortcut_items(&app);
         let table = crate::shortcut_dispatch::bindings(&app);
-        let specs: [(&str, &str, &[&str]); 4] = [
+        let specs: [(&str, &str, &[&str]); 5] = [
             ("basicColor.autoFace", "Alt+Shift+A", &["Window", "Basic Color"]),
             ("basicColor.scanFaces", "Alt+Shift+F", &["Window", "Basic Color"]),
             ("basicColor.toggleSelection", "Alt+Shift+S", &["Window", "Basic Color"]),
+            ("basicColor.eraseRegion", "Alt+Shift+X", &["Window", "Basic Color"]),
             ("window.toggle.basicColor", "Alt+B", &["Window"]),
         ];
         for (id, key, path) in specs {
@@ -1616,6 +1667,7 @@ mod tests {
         assert_eq!(tips.auto_face, format!("Auto-select face  ({})", crate::shortcuts::pretty("Alt+Shift+Z")));
         assert_eq!(tips.scan_faces, text::SCAN_FACES, "a cleared binding leaves the plain label");
         assert_eq!(tips.selection, format!("Show selection  ({})", crate::shortcuts::pretty("Alt+Shift+S")));
+        assert_eq!(tips.erase_region, format!("Erase region  ({})", crate::shortcuts::pretty("Alt+Shift+X")));
         assert_eq!(face_tips(&app, true).selection, format!("Hide selection  ({})", crate::shortcuts::pretty("Alt+Shift+S")));
     }
 
@@ -1648,6 +1700,24 @@ mod tests {
         assert_eq!(item.checked, Some(true), "the menu shows Basic Color checked");
         crate::menus::invoke(&mut app, &ctx, "window.panel.basicColor", json!({})).expect("panel alias");
         assert!(!app.ui.panels.basic_color);
+    }
+
+    /// The header's Shortcuts… button opens Edit › Keyboard Shortcuts on the shortcuts list with
+    /// the search set to this panel, so its commands are the first thing shown.
+    #[test]
+    fn header_shortcuts_button_opens_keyboard_shortcuts_filtered_to_the_panel() {
+        let mut h = harness(vec2(1440.0, 900.0));
+        h.get_by_label("Keyboard Shortcuts…").click();
+        h.run_steps(2);
+        let dialog = h
+            .state()
+            .ui
+            .dialogs
+            .iter()
+            .find(|dialog| dialog.fields.get("__prefsui").and_then(Value::as_str) == Some("shortcuts"))
+            .expect("the Keyboard Shortcuts dialog opened");
+        assert_eq!(dialog.fields.get("filter").and_then(Value::as_str), Some(text::TITLE));
+        assert_eq!(dialog.fields.get("tab").and_then(Value::as_u64), Some(0));
     }
 
     #[test]
@@ -1698,6 +1768,13 @@ mod tests {
             Some(photocraft_engine::mask_view_cmds::MaskViewMode::Overlay),
             "starting a region shows the selection overlay"
         );
+
+        // Erase region flips the colours so the same brush hides mask coverage.
+        apply(&mut app, Action::EraseRegion { layer: id });
+        assert_eq!(app.ui.tool, crate::state::Tool::Brush);
+        assert!(app.ui.mask_target && !app.ui.vector_mask_target);
+        assert_eq!(app.session.tools.foreground, [0.0, 0.0, 0.0, 1.0], "black foreground erases");
+        assert_eq!(app.session.tools.background, [1.0, 1.0, 1.0, 1.0], "white background");
 
         apply(&mut app, Action::ToggleMask { layer: id });
         let st = app.session.active().expect("document");

@@ -4388,6 +4388,7 @@ shape	Appearance	Aspetto
 	Basic Color: Auto-select Face	Basic Color: Seleziona viso automaticamente
 	Basic Color: Scan Faces	Basic Color: Analizza volti
 	Basic Color: Show/Hide Selection	Basic Color: Mostra/nascondi selezione
+	Basic Color: Erase Region	Basic Color: Cancella area
 	Color Presets: Save Current Look	Predefiniti colore: Salva aspetto corrente
 	Color Presets: Apply Selected Preset	Predefiniti colore: Applica predefinito selezionato
 	Color Presets: Run Batch	Predefiniti colore: Esegui lotto

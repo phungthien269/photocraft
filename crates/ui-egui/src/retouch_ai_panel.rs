@@ -1335,6 +1335,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     if icons::button(ui, "x", 20.0, false, tl!(text::CLOSE)).clicked() {
                         open = false;
                     }
+                    if crate::prefs_ui::shortcuts_button(ui) {
+                        crate::prefs_ui::open_shortcuts_filtered(app, text::TITLE);
+                    }
                 });
             });
             ui.add_space(5.0);
@@ -1772,6 +1775,36 @@ mod tests {
         assert_eq!(item.checked, Some(true), "the menu shows Retouch AI checked");
         crate::menus::invoke(&mut app, &ctx, "window.panel.retouchAI", json!({})).expect("panel alias");
         assert!(!app.ui.panels.retouch_ai);
+    }
+
+    /// The header's Shortcuts… button opens Edit › Keyboard Shortcuts with "Retouch AI" in the
+    /// search field.
+    #[test]
+    fn header_shortcuts_button_opens_keyboard_shortcuts_filtered_to_retouch_ai() {
+        let mut app = app();
+        app.ui.panels.retouch_ai = true;
+        let mut h = Harness::builder().with_size(vec2(900.0, 800.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let ctx = ui.ctx().clone();
+                if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                window(app, &ctx);
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(4);
+        h.get_by_label("Keyboard Shortcuts…").click();
+        h.run_steps(2);
+        let dialog = h
+            .state()
+            .ui
+            .dialogs
+            .iter()
+            .find(|dialog| dialog.fields.get("__prefsui").and_then(Value::as_str) == Some("shortcuts"))
+            .expect("the Keyboard Shortcuts dialog opened");
+        assert_eq!(dialog.fields.get("filter").and_then(Value::as_str), Some("Retouch AI"));
     }
 
     #[test]

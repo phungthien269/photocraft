@@ -741,6 +741,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         "basicColor.autoFace"
         | "basicColor.scanFaces"
         | "basicColor.toggleSelection"
+        | "basicColor.eraseRegion"
         | "colorPresets.save"
         | "colorPresets.apply"
         | "colorPresets.runBatch"
@@ -1704,6 +1705,7 @@ mod tests {
             ("basicColor.autoFace", ["Window", "Basic Color"], "Alt+Shift+A"),
             ("basicColor.scanFaces", ["Window", "Basic Color"], "Alt+Shift+F"),
             ("basicColor.toggleSelection", ["Window", "Basic Color"], "Alt+Shift+S"),
+            ("basicColor.eraseRegion", ["Window", "Basic Color"], "Alt+Shift+X"),
             ("colorPresets.save", ["Window", "Color Presets"], "Alt+Shift+V"),
             ("colorPresets.apply", ["Window", "Color Presets"], "Alt+Shift+Enter"),
             ("colorPresets.runBatch", ["Window", "Color Presets"], "Alt+Shift+R"),

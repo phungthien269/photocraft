@@ -2880,6 +2880,7 @@ curves	Smooth	平滑
 	Basic Color: Auto-select Face	Basic Color：自動選取臉部
 	Basic Color: Scan Faces	Basic Color：掃描臉部
 	Basic Color: Show/Hide Selection	Basic Color：顯示/隱藏選取範圍
+	Basic Color: Erase Region	Basic Color：擦除區域
 	Color Presets: Save Current Look	顏色預設集：儲存目前外觀
 	Color Presets: Apply Selected Preset	顏色預設集：套用所選預設集
 	Color Presets: Run Batch	顏色預設集：執行批次

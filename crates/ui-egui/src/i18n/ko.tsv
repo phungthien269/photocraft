@@ -3453,6 +3453,7 @@ curves	Smooth	매끄럽게
 	Basic Color: Auto-select Face	Basic Color: 얼굴 자동 선택
 	Basic Color: Scan Faces	Basic Color: 얼굴 스캔
 	Basic Color: Show/Hide Selection	Basic Color: 선택 영역 표시/숨기기
+	Basic Color: Erase Region	Basic Color: 영역 지우기
 	Color Presets: Save Current Look	색상 사전 설정: 현재 모양 저장
 	Color Presets: Apply Selected Preset	색상 사전 설정: 선택한 사전 설정 적용
 	Color Presets: Run Batch	색상 사전 설정: 일괄 처리 실행

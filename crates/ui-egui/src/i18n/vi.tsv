@@ -3848,6 +3848,7 @@ curves	Smooth	Làm mượt
 	No pixel mask yet. Apply to the whole image or auto-select a face; then paint to narrow it.	Chưa có mặt nạ pixel. Hãy áp dụng cho toàn ảnh hoặc tự chọn vùng mặt, sau đó tô để thu hẹp vùng.
 	Paint a new region	Tô vùng mới
 	Add to region	Thêm vào vùng
+	Erase region	Xoá vùng
 	Auto-select face	Tự chọn vùng mặt
 	Scan faces	Quét khuôn mặt
 	Faces	Khuôn mặt
@@ -3917,6 +3918,7 @@ curves	Smooth	Làm mượt
 	Basic Color: Auto-select Face	Chỉnh màu: Tự chọn vùng mặt
 	Basic Color: Scan Faces	Chỉnh màu: Quét khuôn mặt
 	Basic Color: Show/Hide Selection	Chỉnh màu: Hiện/Ẩn vùng chọn
+	Basic Color: Erase Region	Chỉnh màu: Xoá vùng
 	Color Presets: Save Current Look	Preset màu: Lưu look hiện tại
 	Color Presets: Apply Selected Preset	Preset màu: Áp dụng preset đã chọn
 	Color Presets: Run Batch	Preset màu: Chạy hàng loạt

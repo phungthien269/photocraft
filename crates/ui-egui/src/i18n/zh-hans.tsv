@@ -2895,6 +2895,7 @@ curves	Smooth	平滑
 	Basic Color: Auto-select Face	Basic Color：自动选择面部
 	Basic Color: Scan Faces	Basic Color：扫描面部
 	Basic Color: Show/Hide Selection	Basic Color：显示/隐藏选区
+	Basic Color: Erase Region	Basic Color：擦除区域
 	Color Presets: Save Current Look	颜色预设：保存当前外观
 	Color Presets: Apply Selected Preset	颜色预设：应用所选预设
 	Color Presets: Run Batch	颜色预设：运行批处理

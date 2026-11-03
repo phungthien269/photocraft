@@ -1070,6 +1070,21 @@ pub fn open_shortcuts(app: &mut PhotocraftApp, tab: u64) -> u64 {
     open_kind(app, "shortcuts", tl!("Keyboard Shortcuts and Menus"), fields)
 }
 
+/// Open Keyboard Shortcuts with the search prefilled, as a panel header's Shortcuts… button does.
+pub fn open_shortcuts_filtered(app: &mut PhotocraftApp, filter: &str) -> u64 {
+    let id = open_shortcuts(app, 0);
+    if let Some(dialog) = app.ui.dialog_mut(id) {
+        dialog.fields.insert("filter".into(), json!(filter));
+    }
+    id
+}
+
+/// A compact title-row button for a panel's header: it returns true when clicked, and the caller
+/// opens [`open_shortcuts_filtered`] with that panel's name.
+pub fn shortcuts_button(ui: &mut egui::Ui) -> bool {
+    crate::widgets::compact_button(ui, tl!("Keyboard Shortcuts…"), 20.0).clicked()
+}
+
 /// Open the Embedded Profile Mismatch prompt for a file waiting to open (`open_prompt`): its
 /// `message`, the answer selected first (`action`), and `marker`, the field that routes OK and
 /// Cancel back to `open_prompt`.
@@ -3877,6 +3892,20 @@ mod tests {
         assert!(apply(&mut app, id).is_err());
         assert!(app.ui.dialog_mut(id).is_some());
         assert_eq!(app.session.prefs().to_json(), before);
+    }
+
+    /// A panel header's Shortcuts… button opens Edit › Keyboard Shortcuts on the shortcuts tab
+    /// with the search already set to that panel's name.
+    #[test]
+    fn filtered_shortcuts_open_on_the_shortcuts_tab_with_the_search_set() {
+        let (mut app, _) = app_with_store();
+        for filter in ["Retouch AI", "Basic Color", "Color Presets", "Face Reshape"] {
+            let id = open_shortcuts_filtered(&mut app, filter);
+            let dialog = app.ui.dialog_mut(id).expect("the dialog is open");
+            assert_eq!(dialog.fields.get("filter").and_then(Value::as_str), Some(filter), "{filter}: search prefilled");
+            assert_eq!(dialog.fields.get("tab").and_then(Value::as_u64), Some(0), "{filter}: shortcuts tab");
+            app.ui.close_dialog(id);
+        }
     }
 
     #[test]

@@ -895,6 +895,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 
     let mut open = true;
+    let mut shortcuts = false;
     let mut actions = Vec::new();
     let t = Tokens::get(ctx);
     let frame = card_frame(&t);
@@ -919,6 +920,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, "x", 20.0, false, close_label()).clicked() {
                         open = false;
+                    }
+                    if crate::prefs_ui::shortcuts_button(ui) {
+                        shortcuts = true;
                     }
                 });
             });
@@ -992,6 +996,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     for action in actions {
         apply(app, action);
+    }
+    if shortcuts {
+        crate::prefs_ui::open_shortcuts_filtered(app, ENTRY_EN);
     }
 }
 
@@ -1359,6 +1366,23 @@ mod tests {
             }
         }
         h.run_steps(3);
+    }
+
+    /// The header's Shortcuts… button opens Edit › Keyboard Shortcuts with "Face Reshape" in the
+    /// search field.
+    #[test]
+    fn header_shortcuts_button_opens_keyboard_shortcuts_filtered_to_face_reshape() {
+        let mut h = draw(document_app(), vec2(900.0, 800.0), 0.25);
+        h.get_by_label("Keyboard Shortcuts…").click();
+        h.run_steps(2);
+        let dialog = h
+            .state()
+            .ui
+            .dialogs
+            .iter()
+            .find(|dialog| dialog.fields.get("__prefsui").and_then(Value::as_str) == Some("shortcuts"))
+            .expect("the Keyboard Shortcuts dialog opened");
+        assert_eq!(dialog.fields.get("filter").and_then(Value::as_str), Some(ENTRY_EN));
     }
 
     #[test]

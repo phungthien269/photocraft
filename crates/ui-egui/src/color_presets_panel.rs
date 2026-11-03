@@ -1156,6 +1156,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut events = Vec::new();
     let mut actions = Vec::new();
     let mut open = true;
+    let mut shortcuts = false;
     let t = Tokens::get(ctx);
     let frame = card_frame(&t);
     let canvas = crate::rulers::content_rect(app, app.last_canvas_rect);
@@ -1185,6 +1186,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, "x", 20.0, false, tl!(text::CLOSE)).clicked() {
                         open = false;
+                    }
+                    if crate::prefs_ui::shortcuts_button(ui) {
+                        shortcuts = true;
                     }
                 });
             });
@@ -1250,6 +1254,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         ctx.request_repaint();
     } else if app.ui.color_presets.batch_pending.is_some() || app.ui.color_presets.batch_running {
         ctx.request_repaint();
+    }
+    if shortcuts {
+        crate::prefs_ui::open_shortcuts_filtered(app, text::TITLE);
     }
 }
 
@@ -1356,6 +1363,23 @@ mod tests {
         h.get_by_label(crate::basic_color_panel::text::PRESETS).click();
         h.run_steps(2);
         assert!(h.state().ui.panels.color_presets, "the Basic Color button opens the library");
+    }
+
+    /// The header's Shortcuts… button opens Edit › Keyboard Shortcuts with "Color Presets" in the
+    /// search field.
+    #[test]
+    fn header_shortcuts_button_opens_keyboard_shortcuts_filtered_to_color_presets() {
+        let mut h = harness(app(), vec2(900.0, 800.0));
+        h.get_by_label("Keyboard Shortcuts…").click();
+        h.run_steps(2);
+        let dialog = h
+            .state()
+            .ui
+            .dialogs
+            .iter()
+            .find(|dialog| dialog.fields.get("__prefsui").and_then(Value::as_str) == Some("shortcuts"))
+            .expect("the Keyboard Shortcuts dialog opened");
+        assert_eq!(dialog.fields.get("filter").and_then(Value::as_str), Some(text::TITLE));
     }
 
     #[test]

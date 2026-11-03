@@ -3948,6 +3948,7 @@ curves	Smooth	スムーズ
 	Basic Color: Auto-select Face	Basic Color: 顔を自動選択
 	Basic Color: Scan Faces	Basic Color: 顔をスキャン
 	Basic Color: Show/Hide Selection	Basic Color: 選択範囲の表示/非表示
+	Basic Color: Erase Region	Basic Color: 領域を消去
 	Color Presets: Save Current Look	カラープリセット: 現在のルックを保存
 	Color Presets: Apply Selected Preset	カラープリセット: 選択したプリセットを適用
 	Color Presets: Run Batch	カラープリセット: バッチを実行
