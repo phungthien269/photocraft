@@ -30,8 +30,8 @@ const HEADER_HEIGHT: f32 = 43.0;
 
 /// The height of the panel's body: the mask controls, the Basic/Color Mixer tabs, the three
 /// sections and the ten one-line Basic sliders. In English the paint row wraps, keeping Add to
-/// region and Erase region together on a second line. The body is this tall when the window has
-/// the room for it, and shorter — scrolling, never clipping — when it has not.
+/// region and the erase/paint toggle together on a second line. The body is this tall when the
+/// window has the room for it, and shorter — scrolling, never clipping — when it has not.
 pub const BODY_HEIGHT: f32 = 632.0;
 
 /// Headroom on top of [`BODY_HEIGHT`], so that a small change in the panel's content (the face-key
@@ -70,6 +70,7 @@ pub(crate) mod text {
     pub const PAINT_NEW_REGION: &str = "Paint a new region";
     pub const ADD_TO_REGION: &str = "Add to region";
     pub const ERASE_REGION: &str = "Erase region";
+    pub const PAINT_REGION: &str = "Paint region";
     pub const AUTO_FACE: &str = "Auto-select face";
     pub const SCAN_FACES: &str = "Scan faces";
     pub const CANCEL: &str = "Cancel";
@@ -101,6 +102,8 @@ pub(crate) mod text {
     pub const NO_BASIC_COLOR: &str = "Select a Basic Color layer first.";
     pub const SELECTION_SHOWN: &str = "Selection overlay shown.";
     pub const SELECTION_HIDDEN: &str = "Selection overlay hidden.";
+    pub const ERASE_MODE_ON: &str = "Erase mode: paint black to hide the region.";
+    pub const PAINT_MODE_ON: &str = "Paint mode: paint white to reveal the region.";
 
     // Editor section labels (shared with `adjust_editors`).
     pub const WHITE_BALANCE: &str = "White Balance";
@@ -127,6 +130,7 @@ pub(crate) mod text {
         PAINT_NEW_REGION,
         ADD_TO_REGION,
         ERASE_REGION,
+        PAINT_REGION,
         AUTO_FACE,
         SCAN_FACES,
         CANCEL,
@@ -158,6 +162,8 @@ pub(crate) mod text {
         NO_BASIC_COLOR,
         SELECTION_SHOWN,
         SELECTION_HIDDEN,
+        ERASE_MODE_ON,
+        PAINT_MODE_ON,
         WHITE_BALANCE,
         TONE,
         PRESENCE,
@@ -198,6 +204,9 @@ pub struct BasicColorState {
     /// The last command error shown under the controls (empty: none).
     pub status: String,
     pub status_error: bool,
+    /// The mask brush is in erase mode: black foreground over white, hiding painted coverage.
+    /// Persisted; a layer or document change goes back to painting.
+    pub erase_mode: bool,
     /// Which face the next Auto-select run covers: 0 = all, 1 = main, [`MULTI_FACE`] = the faces
     /// in [`Self::selected_faces`], n+1 = face n. Persisted; a stale face number falls back to all
     /// when the layer changes.
@@ -246,6 +255,7 @@ impl Default for BasicColorState {
         Self {
             status: String::new(),
             status_error: false,
+            erase_mode: false,
             face_choice: 0,
             face_coverage: FaceCoverage::default(),
             face_boxes_visible: true,
@@ -302,7 +312,7 @@ enum Action {
     Reset { layer: LayerId },
     PaintNewRegion { layer: LayerId },
     AddToRegion { layer: LayerId },
-    EraseRegion { layer: LayerId },
+    ToggleErase { layer: LayerId },
     AutoFace { layer: LayerId, choice: usize, coverage: FaceCoverage },
     ScanFaces { layer: LayerId },
     FaceSelectionChanged,
@@ -324,15 +334,21 @@ fn failed(app: &mut PhotocraftApp, template: &str, error: &str) {
 /// Select the Brush with the layer mask targeted and white/black foreground/background, so a
 /// stroke reveals the adjustment; with `erase`, black over white, so a stroke hides it. The
 /// colours are set after [`PhotocraftApp::sync_mask_targets`], which brings back the mask's own
-/// colour pair and could otherwise undo the choice.
-fn paint_setup(app: &mut PhotocraftApp, erase: bool) {
+/// colour pair and could otherwise undo the choice. Returns `false` (and reports the error) when
+/// the colours could not be set. Records the mode in [`BasicColorState::erase_mode`] either way,
+/// so a click that fails is retried in the mode the user asked for.
+fn paint_setup(app: &mut PhotocraftApp, erase: bool) -> bool {
     crate::tool_memory::select(app, crate::state::Tool::Brush);
     app.ui.mask_target = true;
     app.ui.vector_mask_target = false;
     app.sync_mask_targets();
+    app.ui.basic_color.erase_mode = erase;
     let (foreground, background) = if erase { ("#000000", "#ffffff") } else { ("#ffffff", "#000000") };
     if let Err(error) = app.run("tools.setColors", json!({"foreground": foreground, "background": background})) {
         failed(app, text::MASK_FAILED, &error);
+        false
+    } else {
+        true
     }
 }
 
@@ -342,13 +358,14 @@ fn set_selection_view(app: &mut PhotocraftApp, layer: LayerId, mode: &str) -> Re
     app.run("view.layerMask", json!({"layer": layer.0, "mode": mode})).map(|_| ())
 }
 
-/// The effective shortcut hints of the three mask/face buttons, read before the panel borrows its
+/// The effective shortcut hints of the mask/face buttons, read before the panel borrows its
 /// state mutably. A cleared binding leaves the plain label.
 struct FaceTips {
     auto_face: String,
     scan_faces: String,
     selection: String,
     erase_region: String,
+    paint_region: String,
 }
 
 fn face_tips(app: &PhotocraftApp, overlay: bool) -> FaceTips {
@@ -357,6 +374,7 @@ fn face_tips(app: &PhotocraftApp, overlay: bool) -> FaceTips {
         scan_faces: crate::shortcuts::tip_label(app, text::SCAN_FACES, "basicColor.scanFaces"),
         selection: crate::shortcuts::tip_label(app, if overlay { text::HIDE_SELECTION } else { text::SHOW_SELECTION }, "basicColor.toggleSelection"),
         erase_region: crate::shortcuts::tip_label(app, text::ERASE_REGION, "basicColor.eraseRegion"),
+        paint_region: crate::shortcuts::tip_label(app, text::PAINT_REGION, "basicColor.eraseRegion"),
     }
 }
 
@@ -670,8 +688,12 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
             paint_setup(app, false);
             show_selection(app, layer);
         }
-        Action::EraseRegion { layer } => {
-            paint_setup(app, true);
+        Action::ToggleErase { layer } => {
+            let erase = !app.ui.basic_color.erase_mode;
+            if paint_setup(app, erase) {
+                let message = if erase { text::ERASE_MODE_ON } else { text::PAINT_MODE_ON };
+                set_status(&mut app.ui.basic_color, tl!(message).to_string(), false);
+            }
             show_selection(app, layer);
         }
         Action::AutoFace { layer, choice, coverage } => start_face_job(app, layer, FaceJobKind::Apply, choice, coverage),
@@ -818,6 +840,7 @@ fn mask_controls(
     selected: &mut Vec<usize>,
     coverage: &mut FaceCoverage,
     boxes_visible: &mut bool,
+    erase_mode: bool,
     job: Option<&JobInfo>,
     tips: &FaceTips,
     actions: &mut Vec<Action>,
@@ -842,13 +865,14 @@ fn mask_controls(
             actions.push(Action::PaintNewRegion { layer: info.id });
         }
     });
-    // Add and Erase share a row, so Erase is always next to Add.
+    // Add and the erase/paint toggle share a row, so the toggle is always next to Add.
     ui.horizontal(|ui| {
         if widgets::secondary_button(ui, tl!(text::ADD_TO_REGION), 0.0).clicked() {
             actions.push(Action::AddToRegion { layer: info.id });
         }
-        if widgets::secondary_button(ui, tl!(text::ERASE_REGION), 0.0).on_hover_text(tips.erase_region.as_str()).clicked() {
-            actions.push(Action::EraseRegion { layer: info.id });
+        let (label, tip) = if erase_mode { (text::PAINT_REGION, tips.paint_region.as_str()) } else { (text::ERASE_REGION, tips.erase_region.as_str()) };
+        if widgets::secondary_button(ui, tl!(label), 0.0).on_hover_text(tip).clicked() {
+            actions.push(Action::ToggleErase { layer: info.id });
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -966,7 +990,11 @@ pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, St
                 // Without a pixel mask the brush would paint the layer itself, not remove coverage.
                 set_status(&mut app.ui.basic_color, tl!(text::NO_PIXEL_MASK).to_string(), true);
             } else {
-                paint_setup(app, true);
+                let erase = !app.ui.basic_color.erase_mode;
+                if paint_setup(app, erase) {
+                    let message = if erase { text::ERASE_MODE_ON } else { text::PAINT_MODE_ON };
+                    set_status(&mut app.ui.basic_color, tl!(message).to_string(), false);
+                }
                 show_selection(app, info.id);
             }
         }
@@ -978,6 +1006,8 @@ pub(crate) fn menu(app: &mut PhotocraftApp, id: &str) -> Option<Result<Value, St
 /// Window › Basic Color. Draws nothing when the menu closed it; never needs a document.
 pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.panels.basic_color {
+        // Closing the panel ends the mask paint mode; the brush colours stay as they are.
+        app.ui.basic_color.erase_mode = false;
         return;
     }
     poll_face_job(app);
@@ -1006,13 +1036,21 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if let Some(info) = &active {
         let key = app.session.active().map(|st| (st.doc.id.0, info.id));
         if app.ui.basic_color.face_scan_key != key && !app.ui.basic_color.face_busy {
-            // A document or layer switch invalidates the face boxes and the scanned choices.
+            // A document or layer switch invalidates the face boxes and the scanned choices, and
+            // drops the previous layer's erase mode: the next stroke paints on the new layer.
+            let switched = app.ui.basic_color.face_scan_key.is_some();
             app.ui.basic_color.face_choices = 0;
             app.ui.basic_color.face_boxes.clear();
             let choice = app.ui.basic_color.face_choice;
             app.ui.basic_color.face_choice = if choice == 1 || choice == MULTI_FACE { choice } else { 0 };
+            if switched {
+                app.ui.basic_color.erase_mode = false;
+            }
             app.ui.basic_color.face_scan_key = key;
         }
+    } else {
+        // No Basic Color layer is active, so there is no mask to erase on.
+        app.ui.basic_color.erase_mode = false;
     }
     if active.is_some() {
         face_keys(app, ctx);
@@ -1022,6 +1060,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut selected_faces = app.ui.basic_color.selected_faces.clone();
     let mut face_boxes_visible = app.ui.basic_color.face_boxes_visible;
     let mut face_coverage = app.ui.basic_color.face_coverage;
+    let erase_mode = app.ui.basic_color.erase_mode;
     let face_job = app.ui.basic_color.face_job.and_then(|id| app.session.jobs_with_recent().into_iter().find(|j| j.id == id && j.state == "running"));
     let mut open = true;
     let mut actions = Vec::new();
@@ -1105,6 +1144,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                             &mut selected_faces,
                             &mut face_coverage,
                             &mut face_boxes_visible,
+                            erase_mode,
                             face_job.as_ref(),
                             &tips,
                             &mut actions,
@@ -1436,6 +1476,51 @@ mod tests {
         assert!(h.state().ui.basic_color.face_boxes_visible, "and shows them again");
     }
 
+    /// The single button next to Add to region is a toggle: it erases, then paints, and its label
+    /// follows the mode.
+    #[test]
+    fn erase_region_button_toggles_the_label_and_the_paint_mode() {
+        let mut h = harness(vec2(1440.0, 900.0));
+        let id = h.state().session.active().and_then(|st| st.active_layer).expect("active layer");
+        h.state_mut().run("layer.layerMask.revealAll", json!({"layer": id.0})).expect("pixel mask");
+        h.run_steps(2);
+        assert!(h.query_all_by_label(text::ERASE_REGION).next().is_some(), "painting shows Erase region");
+        assert!(h.query_all_by_label(text::PAINT_REGION).next().is_none(), "the paint label is hidden while painting");
+        h.get_by_label(text::ERASE_REGION).click();
+        h.run_steps(2);
+        assert!(h.state().ui.basic_color.erase_mode, "the button switched to erase mode");
+        assert_eq!(h.state().session.tools.foreground, [0.0, 0.0, 0.0, 1.0], "erasing uses black");
+        assert!(h.query_all_by_label(text::PAINT_REGION).next().is_some(), "erasing shows Paint region");
+        assert!(h.query_all_by_label(text::ERASE_REGION).next().is_none(), "the erase label is gone");
+        h.get_by_label(text::PAINT_REGION).click();
+        h.run_steps(2);
+        assert!(!h.state().ui.basic_color.erase_mode, "the button switched back to painting");
+        assert_eq!(h.state().session.tools.foreground, [1.0, 1.0, 1.0, 1.0], "painting uses white");
+        assert!(h.query_all_by_label(text::ERASE_REGION).next().is_some(), "painting shows Erase region again");
+    }
+
+    /// Erase mode belongs to the layer being painted: another layer, document or closing the panel
+    /// leaves the next stroke painting.
+    #[test]
+    fn erase_mode_resets_when_the_layer_document_or_panel_changes() {
+        let mut h = harness(vec2(1440.0, 900.0));
+        h.state_mut().ui.basic_color.erase_mode = true;
+        h.state_mut().run("layer.newAdjustmentLayer.basicColor", json!({})).expect("second basic color layer");
+        h.run_steps(2);
+        assert!(!h.state().ui.basic_color.erase_mode, "a layer switch returns to painting");
+
+        h.state_mut().ui.basic_color.erase_mode = true;
+        h.state_mut().run("file.new", json!({"width": 64, "height": 64, "mode": "rgb", "depth": 8})).expect("second document");
+        h.state_mut().run("layer.newAdjustmentLayer.basicColor", json!({})).expect("basic color layer");
+        h.run_steps(2);
+        assert!(!h.state().ui.basic_color.erase_mode, "a document switch returns to painting");
+
+        h.state_mut().ui.basic_color.erase_mode = true;
+        h.state_mut().ui.panels.basic_color = false;
+        h.run_steps(2);
+        assert!(!h.state().ui.basic_color.erase_mode, "closing the panel returns to painting");
+    }
+
     #[test]
     fn selected_faces_option_shows_a_checkbox_per_detected_face() {
         let mut h = harness(vec2(1440.0, 900.0));
@@ -1459,12 +1544,21 @@ mod tests {
         assert_eq!(state.face_coverage, FaceCoverage::FaceNeck);
         assert!(state.face_boxes_visible, "the numbered boxes show by default");
         assert!(state.selected_faces.is_empty(), "no explicit multi-face selection yet");
+        assert!(!state.erase_mode, "painting is the default mask mode");
         let json = serde_json::to_string(&state).expect("serialize");
         let back: BasicColorState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
+        // The erase toggle is persisted in the panel state.
+        let mut erasing = state.clone();
+        erasing.erase_mode = true;
+        let back: BasicColorState = serde_json::from_str(&serde_json::to_string(&erasing).expect("serialize")).expect("deserialize");
+        assert!(back.erase_mode, "erase mode round-trips");
         // An older layout without the field gets the whole default state.
         let fresh: BasicColorState = serde_json::from_str("{}").expect("missing fields default");
         assert_eq!(fresh, BasicColorState::default());
+        let legacy: BasicColorState = serde_json::from_str(r#"{"eraseMode":true}"#).expect("erase mode");
+        assert!(legacy.erase_mode);
+        assert!(!BasicColorState::default().erase_mode, "old layouts default to painting");
         let main: BasicColorState = serde_json::from_str(r#"{"faceChoice":1,"faceCoverage":"face"}"#).expect("main face mode");
         assert_eq!(main.face_choice, 1);
         assert_eq!(main.face_coverage, FaceCoverage::Face);
@@ -1597,20 +1691,30 @@ mod tests {
         assert_eq!(photocraft_engine::mask_view_cmds::current(st), None);
         assert_eq!(app.ui.basic_color.status, text::SELECTION_HIDDEN);
 
-        // Erase region prepares the same mask painting with the colours reversed, so a stroke
-        // removes mask coverage, and shows the selection overlay again.
+        // Erase region is a toggle: the first press prepares mask painting with the colours
+        // reversed, so a stroke removes coverage, and shows the selection overlay again.
         let value = crate::menus::invoke(&mut app, &ctx, "basicColor.eraseRegion", json!({})).expect("erase region");
         assert_eq!(value["action"], "eraseRegion");
+        assert!(app.ui.basic_color.erase_mode, "the command switches to erase mode");
         assert_eq!(app.ui.tool, crate::state::Tool::Brush);
         assert!(app.ui.mask_target && !app.ui.vector_mask_target);
         assert_eq!(app.session.tools.foreground, [0.0, 0.0, 0.0, 1.0], "black foreground erases");
         assert_eq!(app.session.tools.background, [1.0, 1.0, 1.0, 1.0], "white background");
+        assert_eq!(app.ui.basic_color.status, text::ERASE_MODE_ON, "the toggle says it is erasing");
         let st = app.session.active().expect("document");
         assert_eq!(
             photocraft_engine::mask_view_cmds::current(st).map(|view| view.mode),
             Some(photocraft_engine::mask_view_cmds::MaskViewMode::Overlay),
             "the erase command shows the selection overlay"
         );
+
+        // A second press goes back to painting: white over black, and a matching status.
+        let value = crate::menus::invoke(&mut app, &ctx, "basicColor.eraseRegion", json!({})).expect("paint region");
+        assert_eq!(value["action"], "eraseRegion");
+        assert!(!app.ui.basic_color.erase_mode, "the command toggles back to painting");
+        assert_eq!(app.session.tools.foreground, [1.0, 1.0, 1.0, 1.0], "white foreground paints");
+        assert_eq!(app.session.tools.background, [0.0, 0.0, 0.0, 1.0], "black background");
+        assert_eq!(app.ui.basic_color.status, text::PAINT_MODE_ON, "the toggle says it is painting");
     }
 
     /// The new commands are listed by Edit › Keyboard Shortcuts with their defaults, the
@@ -1668,6 +1772,7 @@ mod tests {
         assert_eq!(tips.scan_faces, text::SCAN_FACES, "a cleared binding leaves the plain label");
         assert_eq!(tips.selection, format!("Show selection  ({})", crate::shortcuts::pretty("Alt+Shift+S")));
         assert_eq!(tips.erase_region, format!("Erase region  ({})", crate::shortcuts::pretty("Alt+Shift+X")));
+        assert_eq!(tips.paint_region, format!("Paint region  ({})", crate::shortcuts::pretty("Alt+Shift+X")), "the toggle's other label keeps the key");
         assert_eq!(face_tips(&app, true).selection, format!("Hide selection  ({})", crate::shortcuts::pretty("Alt+Shift+S")));
     }
 
@@ -1760,6 +1865,7 @@ mod tests {
         assert!(app.ui.mask_target && !app.ui.vector_mask_target);
         assert_eq!(app.session.tools.foreground, [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(app.session.tools.background, [0.0, 0.0, 0.0, 1.0]);
+        assert!(!app.ui.basic_color.erase_mode, "a new region paints");
         let st = app.session.active().expect("document");
         let mask = st.doc.layer(id).and_then(|l| l.mask.as_ref()).expect("mask");
         assert_eq!(mask.surface.sample_channel(32, 32, 0), 0.0, "a new region starts hidden");
@@ -1769,12 +1875,24 @@ mod tests {
             "starting a region shows the selection overlay"
         );
 
-        // Erase region flips the colours so the same brush hides mask coverage.
-        apply(&mut app, Action::EraseRegion { layer: id });
+        // The erase toggle flips the colours, then flips them back.
+        apply(&mut app, Action::ToggleErase { layer: id });
+        assert!(app.ui.basic_color.erase_mode);
         assert_eq!(app.ui.tool, crate::state::Tool::Brush);
         assert!(app.ui.mask_target && !app.ui.vector_mask_target);
         assert_eq!(app.session.tools.foreground, [0.0, 0.0, 0.0, 1.0], "black foreground erases");
         assert_eq!(app.session.tools.background, [1.0, 1.0, 1.0, 1.0], "white background");
+        assert_eq!(app.ui.basic_color.status, text::ERASE_MODE_ON);
+        apply(&mut app, Action::ToggleErase { layer: id });
+        assert!(!app.ui.basic_color.erase_mode);
+        assert_eq!(app.session.tools.foreground, [1.0, 1.0, 1.0, 1.0], "white foreground paints");
+        assert_eq!(app.session.tools.background, [0.0, 0.0, 0.0, 1.0], "black background");
+        assert_eq!(app.ui.basic_color.status, text::PAINT_MODE_ON);
+        // Add to region also leaves erase mode: the next stroke reveals.
+        apply(&mut app, Action::ToggleErase { layer: id });
+        assert!(app.ui.basic_color.erase_mode);
+        apply(&mut app, Action::AddToRegion { layer: id });
+        assert!(!app.ui.basic_color.erase_mode, "Add to region paints");
 
         apply(&mut app, Action::ToggleMask { layer: id });
         let st = app.session.active().expect("document");

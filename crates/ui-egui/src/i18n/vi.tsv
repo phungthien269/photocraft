@@ -3849,6 +3849,7 @@ curves	Smooth	Làm mượt
 	Paint a new region	Tô vùng mới
 	Add to region	Thêm vào vùng
 	Erase region	Xoá vùng
+	Paint region	Tô vùng
 	Auto-select face	Tự chọn vùng mặt
 	Scan faces	Quét khuôn mặt
 	Faces	Khuôn mặt
@@ -3925,6 +3926,8 @@ curves	Smooth	Làm mượt
 	Select a Basic Color layer first.	Hãy chọn một lớp Chỉnh màu trước.
 	Selection overlay shown.	Đã hiện lớp phủ vùng chọn.
 	Selection overlay hidden.	Đã ẩn lớp phủ vùng chọn.
+	Erase mode: paint black to hide the region.	Chế độ xoá: tô màu đen để ẩn vùng.
+	Paint mode: paint white to reveal the region.	Chế độ tô: tô màu trắng để hiện vùng.
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Định hình khuôn mặt
 	Face Reshape: Apply	Định hình khuôn mặt: Áp dụng
