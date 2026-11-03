@@ -265,6 +265,94 @@ pub fn pill_tab(ui: &mut Ui, label: &str, selected: bool) -> Response {
     resp
 }
 
+/// A full-width segmented tab strip (Basic | Color Mixer): one rounded track with equal-width
+/// segments, the selected one filled. Returns the segment chosen this frame.
+pub fn segmented_tabs(ui: &mut Ui, id: egui::Id, labels: &[&str], selected: usize) -> usize {
+    let t = Tokens::get(ui.ctx());
+    let selected = selected.min(labels.len().saturating_sub(1));
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let radius = CornerRadius::same(if t.bevel { t.radius_sm as u8 } else { t.radius_lg.max(10.0) as u8 });
+    ui.painter().rect_filled(rect, radius, t.field);
+    if !t.bevel {
+        ui.painter().rect_stroke(rect, radius, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    }
+    let count = labels.len().max(1);
+    let width = rect.width() / count as f32;
+    let inner = CornerRadius::same(radius.nw.saturating_sub(3));
+    let mut result = selected;
+    for (i, label) in labels.iter().enumerate() {
+        let segment = Rect::from_min_max(pos2(rect.left() + i as f32 * width, rect.top()), pos2(rect.left() + (i + 1) as f32 * width, rect.bottom()))
+            .shrink2(vec2(3.0, 3.0));
+        let resp = ui.interact(segment, id.with(i), Sense::click());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if i == selected {
+            ui.painter().rect_filled(segment, inner, t.hover);
+            if !t.bevel {
+                ui.painter().rect_stroke(segment, inner, Stroke::new(1.0, t.accent_border), StrokeKind::Inside);
+            }
+        } else if resp.hovered() {
+            ui.painter().rect_filled(segment, inner, t.hover.gamma_multiply(0.55));
+        }
+        let text = tl!(*label);
+        let color = if i == selected { t.text } else { t.text_dim };
+        let galley = ui.painter().layout_no_wrap(text.to_string(), theme::medium(12.5), color);
+        ui.painter().galley_with_override_text_color(segment.center() - galley.size() / 2.0, galley, color);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, i == selected, text));
+        if resp.clicked() {
+            result = i;
+        }
+    }
+    result
+}
+
+/// A soft group card for floating panels: a rounded, subtly bordered surface with 10×6 padding.
+/// Themes keep their own radii; Classic keeps its square bevels.
+pub fn soft_card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let t = Tokens::get(ui.ctx());
+    let radius = CornerRadius::same(if t.bevel { t.radius_sm as u8 } else { t.radius_lg.max(10.0) as u8 });
+    egui::Frame::NONE
+        .fill(t.field)
+        .stroke(Stroke::new(1.0, t.card_border))
+        .corner_radius(radius)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, add)
+        .inner
+}
+
+/// A section title with optional trailing controls on the same row.
+pub fn section_header(ui: &mut Ui, title: &str, trailing: impl FnOnce(&mut Ui)) {
+    let t = Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).font(theme::semibold(12.5)).color(t.text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
+    });
+    ui.add_space(4.0);
+}
+
+/// A section title on its own (for a stack of cards below it).
+pub fn section_title(ui: &mut Ui, title: &str) {
+    let t = Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(title).font(theme::semibold(12.5)).color(t.text));
+}
+
+/// A readable status/empty-state line: normal notes are dim, errors get a soft danger panel.
+pub fn status_note(ui: &mut Ui, text: &str, error: bool) {
+    let t = Tokens::get(ui.ctx());
+    let color = if error { t.danger } else { t.text_dim };
+    let tint = |alpha: u8| Color32::from_rgba_unmultiplied(t.danger.r(), t.danger.g(), t.danger.b(), alpha);
+    let frame = egui::Frame::NONE
+        .fill(if error { tint(28) } else { Color32::TRANSPARENT })
+        .stroke(if error { Stroke::new(1.0, tint(120)) } else { Stroke::NONE })
+        .corner_radius(CornerRadius::same(t.radius_sm as u8))
+        .inner_margin(egui::Margin::symmetric(if error { 8 } else { 0 }, if error { 6 } else { 2 }));
+    frame.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).wrap());
+    });
+}
+
 /// Monospace numeric field with a dimmed unit suffix, Photoshop style. Drag to scrub. Typed
 /// arithmetic (`1920/2`) applies on Enter, Tab or click-away, and a unit after a number converts
 /// into the field's unit (`1in` in a px field, at the resolution [`set_field_resolution`] gave).
@@ -1202,11 +1290,26 @@ pub fn slider_row_compact(
     g: RowGestures,
     decimals: Option<u32>,
 ) -> Response {
+    slider_row_compact_sized(ui, label, value, range, suffix, g, decimals, COMPACT_ROW_H)
+}
+
+/// [`slider_row_compact`] with an explicit row height, for panels that want more breathing room.
+#[allow(clippy::too_many_arguments)]
+pub fn slider_row_compact_sized(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    g: RowGestures,
+    decimals: Option<u32>,
+    row_h: f32,
+) -> Response {
     let t = Tokens::get(ui.ctx());
     let total = ui.available_width();
-    // Not `ui.horizontal`: that assumes a 24 pt interactive line, and this row is 20.
+    // Not `ui.horizontal`: that assumes a 24 pt interactive line, and this row is `row_h`.
     let (mut r, field) = ui
-        .allocate_ui_with_layout(vec2(total, COMPACT_ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        .allocate_ui_with_layout(vec2(total, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             let gap = ui.spacing().item_spacing.x;
             let field_w = COMPACT_FIELD_W;
             // Keep the label column's 88 points when the panel has them; in a narrower host it
@@ -1214,18 +1317,18 @@ pub fn slider_row_compact(
             let label_w = COMPACT_LABEL_W.min((total - field_w - 2.0 * gap - 60.0).max(48.0));
             let slider_w = (total - label_w - field_w - 2.0 * gap).max(60.0);
             let label_resp = ui
-                .allocate_ui_with_layout(vec2(label_w, COMPACT_ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                .allocate_ui_with_layout(vec2(label_w, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(tl!(label)).color(t.text_dim)).truncate())
                 })
                 .inner;
             // The label scrubs the field across the slider in between (Photoshop's scrubby labels).
             scrub_label_within(ui, &label_resp, f32::INFINITY);
             let slider = ui
-                .allocate_ui_with_layout(vec2(slider_w, COMPACT_ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                .allocate_ui_with_layout(vec2(slider_w, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     slider_with(ui, value, range.clone(), None, g)
                 })
                 .inner;
-            let field = value_field_box(ui, value, range, suffix, vec2(field_w, COMPACT_ROW_H), 0.0, FieldOpts { decimals, ..Default::default() }).0;
+            let field = value_field_box(ui, value, range, suffix, vec2(field_w, row_h), 0.0, FieldOpts { decimals, ..Default::default() }).0;
             (slider, field)
         })
         .inner;

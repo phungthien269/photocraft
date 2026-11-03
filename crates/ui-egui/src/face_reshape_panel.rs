@@ -9,7 +9,7 @@
 //! Labels are a local English/Vietnamese table: the panel's 68 slider names do not belong in every
 //! language catalog. Engine keys are never translated.
 
-use egui::{Align2, CornerRadius, Sense, Stroke, vec2};
+use egui::{Align2, CornerRadius, Sense, Stroke, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -20,14 +20,21 @@ use crate::{PhotocraftApp, icons, widgets};
 pub const CMD: &str = "retouchAI.faceReshape";
 /// Panel width in points.
 pub const WIDTH: f32 = 430.0;
-/// The chrome above the scrolling body (title row, hairline and their spacing).
-const HEADER_HEIGHT: f32 = 43.0;
+/// The chrome above the scrolling body (the title/subtitle row, the hairline and their spacing).
+const HEADER_HEIGHT: f32 = 57.0;
+/// The preset and face cards above the body, with the space below them. The extra row is the
+/// numbered-face checkboxes, kept in the budget so switching to Selected never clips the actions.
+const TOP_CHROME: f32 = 256.0;
+/// The sticky action card below the body, with the space above it and room for the status line.
+const BOTTOM_CHROME: f32 = 125.0;
 /// The body height when there is room for all 17 sliders of the widest group.
-pub const BODY_HEIGHT: f32 = 640.0;
+pub const BODY_HEIGHT: f32 = 760.0;
 /// The label column of a slider row.
 const LABEL_WIDTH: f32 = 150.0;
 /// The numeric field of a slider row.
 const FIELD_WIDTH: f32 = 56.0;
+/// The height of one slider row.
+const ROW_HEIGHT: f32 = 22.0;
 
 fn panel_id() -> egui::Id {
     egui::Id::new("face-reshape")
@@ -148,6 +155,10 @@ fn face_number_label() -> &'static str {
 
 fn preset_label() -> &'static str {
     pick("Preset", "Preset")
+}
+
+fn subtitle() -> &'static str {
+    pick("Retouch AI · Face sculpt", "Retouch AI · Định hình khuôn mặt")
 }
 
 fn save_preset_label() -> &'static str {
@@ -903,8 +914,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let frame_margin = frame.total_margin().sum().y;
     let default_top = canvas.top() + 8.0;
     let panel_top = ctx.memory(|mem| mem.area_rect(panel_id())).map_or(default_top, |rect| rect.top());
-    let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT).max(0.0);
+    let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT - TOP_CHROME - BOTTOM_CHROME).max(0.0);
     let body_height = BODY_HEIGHT.min(room);
+    let min_height = if has_document { HEADER_HEIGHT + TOP_CHROME + body_height + BOTTOM_CHROME + frame_margin } else { HEADER_HEIGHT + 62.0 + frame_margin };
     egui::Window::new(entry_label())
         .id(panel_id())
         .title_bar(false)
@@ -912,58 +924,70 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .collapsible(false)
         .frame(frame)
         .default_pos(egui::pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), default_top))
-        .min_height(HEADER_HEIGHT + body_height + frame_margin)
+        .min_height(min_height)
         .show(ctx, |ui| {
             ui.set_width(WIDTH);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(entry_label()).font(theme::semibold(13.0)).color(t.text));
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(egui::RichText::new(entry_label()).font(theme::semibold(14.0)).color(t.text));
+                    ui.label(egui::RichText::new(subtitle()).size(11.5).color(t.text_dim));
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, "x", 20.0, false, close_label()).clicked() {
                         open = false;
                     }
-                    if crate::prefs_ui::shortcuts_button(ui) {
+                    if widgets::secondary_button(ui, tl!("Keyboard Shortcuts…"), 0.0).clicked() {
                         shortcuts = true;
                     }
                 });
             });
-            ui.add_space(5.0);
+            ui.add_space(6.0);
             widgets::hairline(ui);
-            ui.add_space(5.0);
+            ui.add_space(6.0);
             if !has_document {
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-                ui.painter().rect_filled(rect, t.radius_sm, t.field);
-                ui.painter().text(egui::pos2(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, open_hint(), theme::medium(11.5), t.warning);
-                let hint = ui.interact(rect, ui.id().with("face-reshape-no-document"), Sense::hover());
-                hint.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, open_hint()));
+                widgets::soft_card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(egui::RichText::new(open_hint()).size(12.0).color(t.warning)).wrap());
+                });
                 return;
             }
 
-            preset_row(ui, state, &mut actions);
-            face_choice_row(ui, state, &mut actions);
-            top_controls(ui, state, &mut actions);
+            preset_card(ui, state, &mut actions);
+            face_choice_card(ui, state, &mut actions);
+            ui.add_space(6.0);
             let body = egui::ScrollArea::vertical().id_salt("face-reshape-body").max_height(body_height).auto_shrink([false, true]).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.spacing_mut().item_spacing.y = 1.0;
                 for (index, keys) in GROUPS.iter().enumerate() {
                     let is_open = state.active_group == index;
-                    if group_header(ui, index, is_open) {
+                    let mut open_group = false;
+                    widgets::soft_card(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        if group_header(ui, index, keys.len(), is_open) {
+                            open_group = true;
+                        }
+                        if is_open {
+                            ui.add_space(3.0);
+                            for key in *keys {
+                                let Some(value) = state.params.get_mut(key) else { continue };
+                                let outcome = slider_row(ui, key, value);
+                                if outcome.drag_started {
+                                    state.gesture = state.gesture.wrapping_add(1);
+                                }
+                                if outcome.reset || outcome.changed {
+                                    state.dirty = true;
+                                    let coalesce = outcome.dragging.then(|| format!("face-reshape:{key}:{}", state.gesture));
+                                    actions.push(Action::Preview { payload: preview_payload(state, coalesce.as_deref()) });
+                                }
+                            }
+                            ui.add_space(2.0);
+                        }
+                    });
+                    if open_group {
                         state.active_group = index;
                     }
-                    if is_open {
-                        for key in *keys {
-                            let Some(value) = state.params.get_mut(key) else { continue };
-                            let outcome = slider_row(ui, key, value);
-                            if outcome.drag_started {
-                                state.gesture = state.gesture.wrapping_add(1);
-                            }
-                            if outcome.reset || outcome.changed {
-                                state.dirty = true;
-                                let coalesce = outcome.dragging.then(|| format!("face-reshape:{key}:{}", state.gesture));
-                                actions.push(Action::Preview { payload: preview_payload(state, coalesce.as_deref()) });
-                            }
-                        }
-                        ui.add_space(4.0);
-                    }
+                    ui.add_space(6.0);
                 }
             });
             #[cfg(test)]
@@ -974,17 +998,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             widgets::hairline(ui);
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if widgets::primary_button(ui, apply_label(), 120.0).on_hover_text(apply_hint()).clicked() {
-                    actions.push(Action::Apply { payload: apply_payload(state) });
-                }
-            });
-            if state.busy {
-                ui.add(egui::Label::new(egui::RichText::new(busy_label()).size(11.0).color(t.text_dim)).wrap());
-            } else if !state.status.is_empty() {
-                let color = if state.status_error { t.danger } else { t.text_dim };
-                ui.add(egui::Label::new(egui::RichText::new(&state.status).size(11.0).color(color)).wrap());
-            }
+            action_card(ui, state, &mut actions);
         });
 
     if !open {
@@ -1002,15 +1016,25 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
-fn preset_row(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
+fn preset_card(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
     let mut chosen: Option<String> = None;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(preset_label()).size(10.5).color(Tokens::get(ui.ctx()).text_faint));
+    widgets::soft_card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        widgets::section_header(ui, preset_label(), |ui| {
+            let can_delete = state.last_preset.starts_with("user:");
+            let delete = ui.add_enabled_ui(can_delete, |ui| widgets::secondary_button(ui, delete_preset_label(), 0.0)).inner;
+            if delete.clicked()
+                && let Some(name) = state.delete_selected_preset()
+            {
+                let message = crate::i18n::fmt(preset_deleted(), &[("name", &name)]);
+                set_status(state, message, false);
+            }
+        });
         let mut label = state.preset_label();
         if label.is_empty() {
             label = custom_preset_label().to_string();
         }
-        egui::ComboBox::from_id_salt("face-reshape-preset").selected_text(label).width(150.0).icon(widgets::chevron_icon).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("face-reshape-preset").selected_text(label).width(ui.available_width()).icon(widgets::chevron_icon).show_ui(ui, |ui| {
             if ui.selectable_label(state.last_preset.is_empty(), custom_preset_label()).clicked() {
                 chosen = Some(String::new());
             }
@@ -1025,125 +1049,151 @@ fn preset_row(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec
                 }
             }
         });
-        let can_delete = state.last_preset.starts_with("user:");
-        if ui.add_enabled(can_delete, egui::Button::new(delete_preset_label())).clicked()
-            && let Some(name) = state.delete_selected_preset()
-        {
-            let message = crate::i18n::fmt(preset_deleted(), &[("name", &name)]);
-            set_status(state, message, false);
-        }
-    });
-    if let Some(key) = chosen {
-        if key.is_empty() {
-            state.last_preset.clear();
-        } else if let Some(builtin) = key.strip_prefix("builtin:") {
-            if state.apply_builtin(builtin) {
-                actions.push(Action::Preview { payload: preview_payload(state, None) });
-            }
-        } else if let Some(name) = key.strip_prefix("user:") {
-            if state.apply_user_preset(name) {
-                actions.push(Action::Preview { payload: preview_payload(state, None) });
-            } else {
-                set_status(state, preset_missing().to_string(), true);
-            }
-        }
-    }
-    ui.horizontal(|ui| {
-        let width = (ui.available_width() - 106.0).max(90.0);
-        ui.add_sized([width, 20.0], egui::TextEdit::singleline(&mut state.preset_name).hint_text(preset_name_hint()));
-        if widgets::secondary_button(ui, save_preset_label(), 0.0).clicked() {
-            match state.save_preset(&state.preset_name.clone()) {
-                Ok(()) => {
-                    let name = state.last_preset.strip_prefix("user:").unwrap_or_default().to_string();
-                    let message = crate::i18n::fmt(preset_saved(), &[("name", &name)]);
-                    set_status(state, message, false);
+        if let Some(key) = chosen.take() {
+            if key.is_empty() {
+                state.last_preset.clear();
+            } else if let Some(builtin) = key.strip_prefix("builtin:") {
+                if state.apply_builtin(builtin) {
+                    actions.push(Action::Preview { payload: preview_payload(state, None) });
                 }
-                Err(_) => set_status(state, preset_empty().to_string(), true),
+            } else if let Some(name) = key.strip_prefix("user:") {
+                if state.apply_user_preset(name) {
+                    actions.push(Action::Preview { payload: preview_payload(state, None) });
+                } else {
+                    set_status(state, preset_missing().to_string(), true);
+                }
             }
         }
-    });
-    ui.add_space(4.0);
-}
-
-fn face_choice_row(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
-    let before = (state.face_mode, state.selected_faces.clone());
-    ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new(face_mode_label()).size(10.5).color(Tokens::get(ui.ctx()).text_faint));
-        for (mode, label) in [(FaceMode::Main, face_main_label()), (FaceMode::All, face_all_label())] {
-            if ui.selectable_label(state.face_mode == mode, label).clicked() {
-                state.face_mode = mode;
-            }
-        }
-        if ui.add_enabled(state.detected_faces > 1, egui::Button::selectable(state.face_mode == FaceMode::Selected, face_selected_label())).clicked() {
-            state.face_mode = FaceMode::Selected;
-            if state.selected_faces.is_empty() && state.detected_faces > 0 {
-                state.selected_faces = (1..=state.detected_faces).collect();
-            }
-        }
-    });
-    if state.face_mode == FaceMode::Selected && state.detected_faces > 1 {
-        ui.horizontal_wrapped(|ui| {
-            for n in 1..=state.detected_faces {
-                let mut on = state.face_checked(n);
-                let label = crate::i18n::fmt(face_number_label(), &[("n", &n.to_string())]);
-                if widgets::checkbox(ui, &mut on, &label).changed() {
-                    state.toggle_face(n, state.detected_faces);
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let gap = ui.spacing().item_spacing.x;
+            let save_w = widgets::button_width(ui, &[save_preset_label()]);
+            let width = (ui.available_width() - save_w - gap).max(80.0);
+            ui.add_sized([width, 26.0], egui::TextEdit::singleline(&mut state.preset_name).hint_text(preset_name_hint()));
+            if widgets::secondary_button(ui, save_preset_label(), save_w).clicked() {
+                match state.save_preset(&state.preset_name.clone()) {
+                    Ok(()) => {
+                        let name = state.last_preset.strip_prefix("user:").unwrap_or_default().to_string();
+                        let message = crate::i18n::fmt(preset_saved(), &[("name", &name)]);
+                        set_status(state, message, false);
+                    }
+                    Err(_) => set_status(state, preset_empty().to_string(), true),
                 }
             }
         });
-    }
+    });
+    ui.add_space(6.0);
+}
+
+fn face_choice_card(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
+    let before = (state.face_mode, state.selected_faces.clone());
+    widgets::soft_card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        widgets::section_header(ui, face_mode_label(), |_| {});
+        let current = match state.face_mode {
+            FaceMode::Main => 0,
+            FaceMode::All => 1,
+            FaceMode::Selected => 2,
+        };
+        let labels = [face_main_label(), face_all_label(), face_selected_label()];
+        let chosen = widgets::segmented_tabs(ui, ui.id().with("face-reshape-face-mode"), &labels, current);
+        // Selected needs at least two detected faces, as before; an unavailable click is ignored.
+        if chosen != current && !(chosen == 2 && state.detected_faces <= 1) {
+            state.face_mode = match chosen {
+                0 => FaceMode::Main,
+                1 => FaceMode::All,
+                _ => FaceMode::Selected,
+            };
+            if state.face_mode == FaceMode::Selected && state.selected_faces.is_empty() && state.detected_faces > 0 {
+                state.selected_faces = (1..=state.detected_faces).collect();
+            }
+        }
+        if state.face_mode == FaceMode::Selected && state.detected_faces > 1 {
+            ui.add_space(3.0);
+            ui.horizontal_wrapped(|ui| {
+                for n in 1..=state.detected_faces {
+                    let mut on = state.face_checked(n);
+                    let label = crate::i18n::fmt(face_number_label(), &[("n", &n.to_string())]);
+                    if widgets::checkbox(ui, &mut on, &label).changed() {
+                        state.toggle_face(n, state.detected_faces);
+                    }
+                }
+            });
+        }
+    });
     let changed = before.0 != state.face_mode || before.1 != state.selected_faces;
     // Re-preview a live deformation so the chosen faces show at once; an all-zero set has
     // nothing to warp and only records the choice.
     if changed && !state.params.is_identity() {
         actions.push(Action::Preview { payload: preview_payload(state, None) });
     }
-    ui.add_space(4.0);
+    ui.add_space(6.0);
 }
 
-fn top_controls(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
-    ui.horizontal_wrapped(|ui| {
-        if widgets::secondary_button(ui, reset_all_label(), 0.0).clicked() {
-            let preview = state.preview_layer;
-            let payload = reset_payload(state, preview);
-            state.reset_all();
-            actions.push(Action::Reset { payload });
+/// Compare, Reset All, Reset Group and Apply stay visible below the scrolling sliders, so a long
+/// group never hides the final action.
+fn action_card(ui: &mut egui::Ui, state: &mut FaceReshapeState, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    widgets::soft_card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let gap = ui.spacing().item_spacing.x;
+        let compare_w = widgets::button_width(ui, &[compare_label()]);
+        let reset_all_w = widgets::button_width(ui, &[reset_all_label()]);
+        let reset_group_w = widgets::button_width(ui, &[reset_group_label()]);
+        let widths = [compare_w, reset_all_w, reset_group_w];
+        let total: f32 = widths.iter().sum::<f32>() + 2.0 * gap;
+        let scale = if total > ui.available_width() && total > 0.0 { ui.available_width() / total } else { 1.0 };
+        ui.horizontal(|ui| {
+            let compare = widgets::secondary_button(ui, compare_label(), compare_w * scale).on_hover_text(compare_hint());
+            let down = compare.is_pointer_button_down_on();
+            if down && !state.compare {
+                state.compare = true;
+                actions.push(Action::Compare { on: true, payload: compare_payload(state, true) });
+            } else if !down && state.compare {
+                state.compare = false;
+                actions.push(Action::Compare { on: false, payload: compare_payload(state, false) });
+            }
+            if widgets::secondary_button(ui, reset_all_label(), reset_all_w * scale).clicked() {
+                let preview = state.preview_layer;
+                let payload = reset_payload(state, preview);
+                state.reset_all();
+                actions.push(Action::Reset { payload });
+            }
+            if widgets::secondary_button(ui, reset_group_label(), reset_group_w * scale).clicked() {
+                let preview = state.preview_layer;
+                let payload = reset_payload(state, preview);
+                state.reset_group(state.active_group);
+                actions.push(Action::Reset { payload });
+            }
+        });
+        ui.add_space(4.0);
+        if widgets::primary_button(ui, apply_label(), ui.available_width()).on_hover_text(apply_hint()).clicked() {
+            actions.push(Action::Apply { payload: apply_payload(state) });
         }
-        if widgets::secondary_button(ui, reset_group_label(), 0.0).clicked() {
-            let preview = state.preview_layer;
-            let payload = reset_payload(state, preview);
-            state.reset_group(state.active_group);
-            actions.push(Action::Reset { payload });
-        }
-        let compare = ui.add(egui::Button::new(compare_label())).on_hover_text(compare_hint());
-        let down = compare.is_pointer_button_down_on();
-        if down && !state.compare {
-            state.compare = true;
-            actions.push(Action::Compare { on: true, payload: compare_payload(state, true) });
-        } else if !down && state.compare {
-            state.compare = false;
-            actions.push(Action::Compare { on: false, payload: compare_payload(state, false) });
+        if state.busy {
+            ui.add_space(3.0);
+            ui.add(egui::Label::new(egui::RichText::new(busy_label()).size(11.5).color(t.text_dim)).wrap());
+        } else if !state.status.is_empty() {
+            ui.add_space(3.0);
+            widgets::status_note(ui, &state.status, state.status_error);
         }
     });
-    ui.add_space(4.0);
 }
 
-fn group_header(ui: &mut egui::Ui, index: usize, open: bool) -> bool {
+fn group_header(ui: &mut egui::Ui, index: usize, count: usize, open: bool) -> bool {
     let t = Tokens::get(ui.ctx());
-    widgets::hairline(ui);
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().rect_filled(rect, t.radius_sm, t.hover.gamma_multiply(0.5));
     }
-    let chevron = egui::Rect::from_center_size(egui::pos2(rect.left() + 7.0, rect.center().y), vec2(12.0, 12.0));
-    icons::paint(ui, chevron, if open { "chevron-down" } else { "chevron-right" }, 11.0, t.text_dim);
+    let chevron = egui::Rect::from_center_size(egui::pos2(rect.left() + 8.0, rect.center().y), vec2(14.0, 14.0));
+    icons::paint(ui, chevron, if open { "chevron-down" } else { "chevron-right" }, 12.0, t.text_dim);
     let title = group_title(index);
-    ui.painter().text(egui::pos2(rect.left() + 18.0, rect.center().y), Align2::LEFT_CENTER, title, theme::semibold(12.0), t.text);
+    ui.painter().text(egui::pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, title, theme::semibold(12.5), t.text);
+    ui.painter().text(egui::pos2(rect.right() - 4.0, rect.center().y), Align2::RIGHT_CENTER, count.to_string(), theme::mono(10.5), t.text_faint);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
-    if response.clicked() {
-        return true;
-    }
-    false
+    response.clicked()
 }
 
 #[derive(Default)]
@@ -1160,9 +1210,13 @@ fn slider_row(ui: &mut egui::Ui, key: &'static str, value: &mut f32) -> RowOutco
     let text = label(key);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        ui.spacing_mut().interact_size.y = 20.0;
-        let label_response =
-            ui.add_sized([LABEL_WIDTH, 20.0], egui::Label::new(egui::RichText::new(text).size(11.0).color(t.text_dim)).truncate().sense(Sense::click()));
+        ui.spacing_mut().interact_size.y = ROW_HEIGHT;
+        let (label_rect, label_response) = ui.allocate_exact_size(vec2(LABEL_WIDTH, ROW_HEIGHT), Sense::click());
+        let galley = crate::tab_strip::elided(ui, text, theme::medium(12.0), t.text_dim, LABEL_WIDTH - 4.0);
+        let size = galley.size();
+        ui.painter().galley(pos2(label_rect.right() - 2.0 - size.x, label_rect.center().y - size.y / 2.0), galley, t.text_dim);
+        label_response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+        let label_response = if label_response.hovered() { label_response.on_hover_text(text) } else { label_response };
         if label_response.double_clicked() {
             *value = 0.0;
             out.reset = true;
@@ -1179,7 +1233,26 @@ fn slider_row(ui: &mut egui::Ui, key: &'static str, value: &mut f32) -> RowOutco
         out.dragging |= slider.dragged();
         out.changed |= slider.changed();
         let before = *value;
-        let number = ui.add_sized([field, 20.0], egui::DragValue::new(value).range(-100.0..=100.0).speed(1.0).max_decimals(0)).labelled_by(label_response.id);
+        let number = ui
+            .scope(|ui| {
+                ui.style_mut().override_font_id = Some(theme::mono(12.0));
+                ui.visuals_mut().override_text_color = Some(t.text);
+                ui.visuals_mut().extreme_bg_color = t.field;
+                ui.visuals_mut().text_edit_bg_color = Some(t.field);
+                ui.visuals_mut().widgets.inactive.bg_fill = t.field;
+                ui.visuals_mut().widgets.inactive.weak_bg_fill = t.field;
+                ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1.0, t.field_border);
+                ui.visuals_mut().widgets.inactive.fg_stroke = Stroke::new(1.0, t.text);
+                ui.visuals_mut().widgets.hovered.bg_fill = t.hover;
+                ui.visuals_mut().widgets.hovered.weak_bg_fill = t.hover;
+                ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1.0, t.field_border);
+                ui.visuals_mut().widgets.hovered.fg_stroke = Stroke::new(1.0, t.text);
+                ui.visuals_mut().widgets.active.bg_fill = t.pressed;
+                ui.visuals_mut().widgets.active.fg_stroke = Stroke::new(1.0, t.text);
+                ui.add_sized([field, ROW_HEIGHT], egui::DragValue::new(value).range(-100.0..=100.0).speed(1.0).max_decimals(0).fixed_decimals(0))
+            })
+            .inner
+            .labelled_by(label_response.id);
         out.drag_started |= number.drag_started();
         out.dragging |= number.dragged();
         out.changed |= number.changed();
@@ -1558,13 +1631,61 @@ mod tests {
         h.state_mut().ui.face_reshape.active_group = 0;
         h.run_steps(3);
         let (viewport, content) = body_size(&h);
-        assert!(content.y <= viewport.height() + 1.0, "the tallest group fits at 900 points: {content:?} in {viewport:?}");
+        let rect = h.ctx.memory(|mem| mem.area_rect(panel_id())).expect("panel");
+        assert!(rect.bottom() <= 900.0, "the panel stays inside 1440×900: {rect:?}");
+        assert!(content.y > viewport.height(), "at 900 points the tall group scrolls instead of clipping: {content:?} in {viewport:?}");
+
+        // With the room, the widest group fits without scrolling.
+        let mut tall = draw(document_app(), vec2(1000.0, 1300.0), 0.25);
+        tall.state_mut().ui.face_reshape.active_group = 0;
+        tall.run_steps(3);
+        let (viewport, content) = body_size(&tall);
+        assert!(content.y <= viewport.height() + 1.0, "the tallest group fits when the window has room: {content:?} in {viewport:?}");
 
         let mut h = draw(document_app(), vec2(1000.0, 360.0), 0.25);
         h.state_mut().ui.face_reshape.active_group = 0;
         h.run_steps(3);
         let (viewport, content) = body_size(&h);
         assert!(content.y > viewport.height(), "a short window scrolls instead of clipping: {content:?} in {viewport:?}");
+    }
+
+    #[test]
+    fn redesigned_panel_keeps_presets_faces_and_actions_visible_at_1440_by_900() {
+        let mut h = draw(document_app(), vec2(1440.0, 900.0), 0.25);
+        let rect = h.ctx.memory(|mem| mem.area_rect(panel_id())).expect("panel");
+        assert!(rect.bottom() <= 900.0, "the panel stays inside the window: {rect:?}");
+        for label in [
+            entry_label(),
+            subtitle(),
+            preset_label(),
+            face_mode_label(),
+            face_main_label(),
+            face_all_label(),
+            face_selected_label(),
+            compare_label(),
+            reset_all_label(),
+            reset_group_label(),
+            apply_label(),
+        ] {
+            assert!(h.query_all_by_label(label).next().is_some(), "{label} is in the panel");
+        }
+        for index in 0..GROUPS.len() {
+            let title = group_title(index);
+            assert!(h.query_all_by_label(title).next().is_some(), "section {title} is in the panel");
+        }
+        // The sticky action area sits inside the window even though the sliders scroll.
+        let apply = h.get_by_label(apply_label()).rect();
+        assert!(rect.contains(apply.center()), "Apply stays visible: {apply:?} in {rect:?}");
+        let (viewport, content) = body_size(&h);
+        assert!(content.y > viewport.height(), "the 68 sliders scroll inside the body: {content:?} in {viewport:?}");
+
+        // A status line grows the sticky card without pushing it out of the window.
+        h.state_mut().ui.face_reshape.status = crate::i18n::fmt(preview_updated(), &[("points", "68")]);
+        h.run_steps(3);
+        let rect = h.ctx.memory(|mem| mem.area_rect(panel_id())).expect("panel");
+        assert!(rect.bottom() <= 900.0, "the status line stays inside the window: {rect:?}");
+        let apply = h.get_by_label(apply_label()).rect();
+        assert!(rect.contains(apply.center()), "Apply stays visible with a status: {apply:?} in {rect:?}");
     }
 
     #[test]
@@ -1706,6 +1827,26 @@ mod tests {
         h.get_by_label("Face 2").click();
         h.run_steps(2);
         assert_eq!(h.state().ui.face_reshape.selected_faces, vec![1, 3], "clicking a box toggles that face");
+    }
+
+    #[test]
+    fn face_mode_tabs_switch_and_selected_needs_two_faces() {
+        let mut h = draw(document_app(), vec2(1000.0, 900.0), 0.25);
+        h.get_by_label(face_all_label()).click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.face_reshape.face_mode, FaceMode::All, "All is chosen from the tabs");
+        h.get_by_label(face_selected_label()).click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.face_reshape.face_mode, FaceMode::All, "Selected stays unavailable below two faces");
+        h.state_mut().ui.face_reshape.detected_faces = 2;
+        h.run_steps(2);
+        h.get_by_label(face_selected_label()).click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.face_reshape.face_mode, FaceMode::Selected, "two faces make Selected available");
+        assert_eq!(h.state().ui.face_reshape.selected_faces, vec![1, 2], "both faces start checked");
+        h.get_by_label(face_main_label()).click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.face_reshape.face_mode, FaceMode::Main, "Main is chosen from the tabs");
     }
 
     #[test]

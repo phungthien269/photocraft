@@ -42,6 +42,7 @@ mod text {
     pub const OPEN_IMAGE_TO_START: &str = "Open an image to start";
     pub const ANALYZE: &str = "Analyze";
     pub const RUN_SELECTED: &str = "Run Selected";
+    pub const SKIN_BRUSHES: &str = "Skin Brushes";
     pub const SKIN_SMOOTH_BRUSH: &str = "Skin Smooth Brush";
     pub const SKIN_SMOOTH_READY: &str = "Skin Smooth brush ready. Paint where the skin should look smoother.";
     pub const EVEN_TONE_BRUSH: &str = "Even Tone Brush";
@@ -156,6 +157,7 @@ mod text {
         OPEN_IMAGE_TO_START,
         ANALYZE,
         RUN_SELECTED,
+        SKIN_BRUSHES,
         SKIN_SMOOTH_BRUSH,
         SKIN_SMOOTH_READY,
         EVEN_TONE_BRUSH,
@@ -1036,14 +1038,14 @@ fn apply(app: &mut PhotocraftApp, action: Action) {
 fn group_header(ui: &mut egui::Ui, state: &mut RetouchAiState, key: &str, title: &str) -> bool {
     let t = Tokens::get(ui.ctx());
     let mut open = !state.collapsed.iter().any(|c| c == key);
-    widgets::hairline(ui);
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().rect_filled(rect, t.radius_sm, t.hover.gamma_multiply(0.5));
     }
-    let chevron = egui::Rect::from_center_size(egui::pos2(rect.left() + 7.0, rect.center().y), vec2(12.0, 12.0));
-    icons::paint(ui, chevron, if open { "chevron-down" } else { "chevron-right" }, 11.0, t.text_dim);
-    ui.painter().text(egui::pos2(rect.left() + 18.0, rect.center().y), Align2::LEFT_CENTER, title, theme::semibold(12.0), t.text);
+    let chevron = egui::Rect::from_center_size(egui::pos2(rect.left() + 8.0, rect.center().y), vec2(14.0, 14.0));
+    icons::paint(ui, chevron, if open { "chevron-down" } else { "chevron-right" }, 12.0, t.text_dim);
+    ui.painter().text(egui::pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, title, theme::semibold(12.5), t.text);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, title));
     if response.clicked() {
         if open {
@@ -1054,7 +1056,7 @@ fn group_header(ui: &mut egui::Ui, state: &mut RetouchAiState, key: &str, title:
         open = !open;
     }
     if open {
-        ui.add_space(3.0);
+        ui.add_space(6.0);
     }
     open
 }
@@ -1062,45 +1064,48 @@ fn group_header(ui: &mut egui::Ui, state: &mut RetouchAiState, key: &str, title:
 fn tool_row(ui: &mut egui::Ui, state: &mut RetouchAiState, id: &str, tip: &str) {
     let t = Tokens::get(ui.ctx());
     let Some(tool) = state.tools.iter_mut().find(|tool| tool.id == id) else { return };
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 19.0), Sense::click());
-    let box_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 7.0, rect.center().y), vec2(13.0, 13.0));
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect.shrink2(vec2(2.0, 0.0)), t.radius_sm, t.hover.gamma_multiply(0.5));
+    }
+    let box_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 10.0, rect.center().y), vec2(16.0, 16.0));
     widgets::check_box(ui.painter(), box_rect, tool.enabled, response.hovered(), response.is_pointer_button_down_on(), &t);
     let label = tool_label(id);
     ui.painter().text(
-        egui::pos2(rect.left() + 20.0, rect.center().y),
+        egui::pos2(rect.left() + 34.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        theme::medium(12.0),
+        theme::medium(12.5),
         if tool.enabled { t.text } else { t.text_dim },
     );
-    ui.painter().text(egui::pos2(rect.right() - 2.0, rect.center().y), Align2::RIGHT_CENTER, format!("{:.0}%", tool.amount), theme::mono(10.5), t.text_faint);
+    ui.painter().text(egui::pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, format!("{:.0}%", tool.amount), theme::mono(11.5), t.text_dim);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, tool.enabled, label));
     if response.on_hover_text(tip).clicked() {
         tool.enabled = !tool.enabled;
     }
     let enabled = tool.enabled;
     ui.horizontal(|ui| {
-        ui.add_space(20.0);
-        ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
+        ui.add_space(34.0);
+        ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(80.0);
         ui.add_enabled_ui(enabled, |ui| {
             ui.add(egui::Slider::new(&mut tool.amount, 0.0..=100.0).show_value(false).suffix("%")).on_hover_text(tip);
         });
     });
-    ui.add_space(2.0);
+    ui.add_space(6.0);
 }
 
 fn presets(ui: &mut egui::Ui, state: &mut RetouchAiState) {
-    ui.horizontal(|ui| {
-        ui.label(tl!(text::PRESET));
-        let mut choices: Vec<(String, String)> = Vec::with_capacity(BUILTINS.len() + state.presets.len());
-        for preset in &BUILTINS {
-            choices.push((format!("builtin:{}", preset.key), builtin_label(preset.key).to_string()));
-        }
-        for preset in &state.presets {
-            choices.push((format!("user:{}", preset.name), preset.name.clone()));
-        }
-        let mut chosen: Option<String> = None;
-        egui::ComboBox::from_id_salt("retouch-ai-preset").selected_text(state.preset_label()).width(180.0).icon(widgets::chevron_icon).show_ui(ui, |ui| {
+    let mut choices: Vec<(String, String)> = Vec::with_capacity(BUILTINS.len() + state.presets.len());
+    for preset in &BUILTINS {
+        choices.push((format!("builtin:{}", preset.key), builtin_label(preset.key).to_string()));
+    }
+    for preset in &state.presets {
+        choices.push((format!("user:{}", preset.name), preset.name.clone()));
+    }
+    let mut chosen: Option<String> = None;
+    egui::ComboBox::from_id_salt("retouch-ai-preset").selected_text(state.preset_label()).width(ui.available_width()).icon(widgets::chevron_icon).show_ui(
+        ui,
+        |ui| {
             if ui.selectable_label(state.last_preset == CUSTOM, tl!(text::CUSTOM)).clicked() {
                 chosen = Some(CUSTOM.into());
             }
@@ -1109,21 +1114,25 @@ fn presets(ui: &mut egui::Ui, state: &mut RetouchAiState) {
                     chosen = Some(key.clone());
                 }
             }
-        });
-        if let Some(key) = chosen {
-            if let Some(builtin) = key.strip_prefix("builtin:") {
-                state.apply_builtin(builtin);
-            } else if let Some(name) = key.strip_prefix("user:") {
-                state.apply_user_preset(name);
-            } else {
-                state.last_preset = CUSTOM.into();
-            }
+        },
+    );
+    if let Some(key) = chosen {
+        if let Some(builtin) = key.strip_prefix("builtin:") {
+            state.apply_builtin(builtin);
+        } else if let Some(name) = key.strip_prefix("user:") {
+            state.apply_user_preset(name);
+        } else {
+            state.last_preset = CUSTOM.into();
         }
-    });
+    }
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - 116.0).max(90.0);
-        ui.add_sized([width, 20.0], egui::TextEdit::singleline(&mut state.preset_name).hint_text(tl!(text::PRESET_NAME)));
-        if ui.button(tl!(text::SAVE)).clicked() {
+        let gap = ui.spacing().item_spacing.x;
+        let save_w = widgets::button_width(ui, &[tl!(text::SAVE)]);
+        let delete_w = widgets::button_width(ui, &[tl!(text::DELETE)]);
+        let width = (ui.available_width() - save_w - delete_w - 2.0 * gap).max(80.0);
+        ui.add_sized([width, 28.0], egui::TextEdit::singleline(&mut state.preset_name).hint_text(tl!(text::PRESET_NAME)));
+        if widgets::secondary_button(ui, tl!(text::SAVE), save_w).clicked() {
             let name = state.preset_name.clone();
             match state.save_preset(&name) {
                 Ok(()) => set_status(state, crate::i18n::fmt(tl!(text::PRESET_SAVED), &[("name", &name)]), false),
@@ -1131,7 +1140,8 @@ fn presets(ui: &mut egui::Ui, state: &mut RetouchAiState) {
             }
         }
         let can_delete = state.last_preset.starts_with("user:");
-        if ui.add_enabled(can_delete, egui::Button::new(tl!(text::DELETE))).clicked()
+        let delete = ui.add_enabled_ui(can_delete, |ui| widgets::secondary_button(ui, tl!(text::DELETE), delete_w)).inner;
+        if delete.clicked()
             && let Some(name) = state.delete_selected_preset()
         {
             set_status(state, crate::i18n::fmt(tl!(text::PRESET_DELETED), &[("name", &name)]), false);
@@ -1140,19 +1150,19 @@ fn presets(ui: &mut egui::Ui, state: &mut RetouchAiState) {
 }
 
 fn reference_row(ui: &mut egui::Ui, state: &mut RetouchAiState, actions: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(tl!(text::REFERENCE_IMAGE)).size(12.0).color(t.text_dim));
     ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.label(tl!(text::REFERENCE_IMAGE));
-        if ui.button(tl!(text::CHOOSE_REFERENCE)).clicked() {
-            actions.push(Action::PickReference);
-        }
-    });
+    if widgets::secondary_button(ui, tl!(text::CHOOSE_REFERENCE), 0.0).clicked() {
+        actions.push(Action::PickReference);
+    }
     let (text, tip) = if state.reference_path.is_empty() {
         (tl!(text::NO_REFERENCE).to_string(), String::new())
     } else {
         (file_name(&state.reference_path), state.reference_path.clone())
     };
-    let label = ui.add(egui::Label::new(egui::RichText::new(text).size(11.0).color(Tokens::get(ui.ctx()).text_dim)).truncate());
+    let label = ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(t.text_dim)).truncate());
     if !tip.is_empty() {
         label.on_hover_text(tip);
     }
@@ -1163,7 +1173,8 @@ fn results(ui: &mut egui::Ui, state: &mut RetouchAiState, actions: &mut Vec<Acti
         return;
     }
     if state.result_layers.is_empty() {
-        ui.label(egui::RichText::new(tl!(text::NO_RESULTS)).size(11.0).color(Tokens::get(ui.ctx()).text_faint));
+        let t = Tokens::get(ui.ctx());
+        ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_RESULTS)).size(12.0).color(t.text_dim)).wrap());
         return;
     }
     for layer in &mut state.result_layers {
@@ -1173,7 +1184,7 @@ fn results(ui: &mut egui::Ui, state: &mut RetouchAiState, actions: &mut Vec<Acti
                 layer.visible = !layer.visible;
                 actions.push(Action::SetVisible { layer: layer.layer, visible: layer.visible });
             }
-            let label = ui.add(egui::Label::new(egui::RichText::new(&layer.name).size(12.0)).truncate());
+            let label = ui.add(egui::Label::new(egui::RichText::new(&layer.name).size(12.5)).truncate());
             if tool_label(&layer.tool).is_empty() {
                 label.on_hover_text(&layer.name);
             } else {
@@ -1181,15 +1192,15 @@ fn results(ui: &mut egui::Ui, state: &mut RetouchAiState, actions: &mut Vec<Acti
             }
         });
         ui.horizontal(|ui| {
-            ui.add_space(22.0);
-            ui.spacing_mut().slider_width = (ui.available_width() - 44.0).max(80.0);
+            ui.add_space(24.0);
+            ui.spacing_mut().slider_width = (ui.available_width() - 52.0).max(80.0);
             let response = ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=100.0).show_value(false).suffix("%"));
             if response.changed() {
                 actions.push(Action::SetOpacity { layer: layer.layer, opacity: layer.opacity, gesture: finger });
             }
-            ui.label(egui::RichText::new(format!("{:.0}%", layer.opacity)).font(theme::mono(10.5)).color(Tokens::get(ui.ctx()).text_faint));
+            ui.label(egui::RichText::new(format!("{:.0}%", layer.opacity)).font(theme::mono(11.5)).color(Tokens::get(ui.ctx()).text_dim));
         });
-        ui.add_space(2.0);
+        ui.add_space(6.0);
     }
 }
 
@@ -1214,7 +1225,8 @@ fn batch(ui: &mut egui::Ui, state: &mut RetouchAiState, actions: &mut Vec<Action
     folder_field(ui, tl!(text::INPUT_FOLDER), &mut state.batch_input, Action::PickBatchInput, actions);
     folder_field(ui, tl!(text::OUTPUT_FOLDER), &mut state.batch_output, Action::PickBatchOutput, actions);
     ui.horizontal(|ui| {
-        ui.label(tl!(text::FORMAT));
+        let t = Tokens::get(ui.ctx());
+        ui.label(egui::RichText::new(tl!(text::FORMAT)).size(12.0).color(t.text_dim));
         let mut chosen = None;
         egui::ComboBox::from_id_salt("retouch-ai-batch-format")
             .selected_text(format_label(&state.batch_format))
@@ -1231,22 +1243,25 @@ fn batch(ui: &mut egui::Ui, state: &mut RetouchAiState, actions: &mut Vec<Action
             state.batch_format = id;
         }
     });
-    let response = ui.add_enabled(!state.batch_running, egui::Button::new(tl!(text::RUN_BATCH)));
-    if response.clicked() {
+    ui.add_space(4.0);
+    let run = ui.add_enabled_ui(!state.batch_running, |ui| widgets::secondary_button(ui, tl!(text::RUN_BATCH), 0.0)).inner;
+    if run.clicked() {
         actions.push(Action::RunBatch);
     }
     if !state.batch_status.is_empty() {
-        let color = if state.batch_status_error { Tokens::get(ui.ctx()).danger } else { Tokens::get(ui.ctx()).text_dim };
-        ui.add(egui::Label::new(egui::RichText::new(&state.batch_status).size(11.0).color(color)).wrap());
+        ui.add_space(4.0);
+        widgets::status_note(ui, &state.batch_status, state.batch_status_error);
     }
 }
 
 fn folder_field(ui: &mut egui::Ui, label: &str, value: &mut String, pick: Action, actions: &mut Vec<Action>) {
-    ui.label(egui::RichText::new(label).size(11.0).color(Tokens::get(ui.ctx()).text_dim));
+    let t = Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(label).size(12.0).color(t.text_dim));
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - 70.0).max(90.0);
-        ui.add_sized([width, 20.0], egui::TextEdit::singleline(value).hint_text(tl!(text::FOLDER_PATH)));
-        if ui.button(tl!(text::BROWSE)).clicked() {
+        let width = (ui.available_width() - 78.0).max(90.0);
+        ui.add_sized([width, 28.0], egui::TextEdit::singleline(value).hint_text(tl!(text::FOLDER_PATH)));
+        if widgets::secondary_button(ui, tl!(text::BROWSE), 0.0).clicked() {
             actions.push(pick);
         }
     });
@@ -1317,8 +1332,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let canvas = app.last_canvas_rect;
     let max_height = (ctx.content_rect().height() * 0.72).max(360.0);
     // A borderless auto-sized window defaults to 420 points tall, which cuts the tool list after
-    // the first group. Reserve the fixed chrome (title, engine row, optional hint) plus the body.
-    let default_height = (max_height + 100.0).min((ctx.content_rect().height() - 48.0).max(360.0));
+    // the first group. Reserve the fixed chrome (title, engine subtitle, optional hint) plus the body.
+    let default_height = (max_height + 120.0).min((ctx.content_rect().height() - 48.0).max(360.0));
     egui::Window::new(tl!(text::TITLE))
         .id(egui::Id::new("retouch-ai"))
         .title_bar(false)
@@ -1330,130 +1345,154 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(WIDTH);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(tl!(text::TITLE)).font(theme::semibold(13.0)).color(t.text));
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(tl!(text::TITLE)).font(theme::semibold(14.0)).color(t.text));
+                    // Phase 1 is local only: no Cloud entry, no network.
+                    ui.label(egui::RichText::new(format!("{} · {}", tl!(text::ENGINE), tl!(text::LOCAL_CPU))).size(11.5).color(t.text_dim));
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, "x", 20.0, false, tl!(text::CLOSE)).clicked() {
                         open = false;
                     }
-                    if crate::prefs_ui::shortcuts_button(ui) {
+                    if widgets::secondary_button(ui, tl!("Keyboard Shortcuts…"), 0.0).clicked() {
                         crate::prefs_ui::open_shortcuts_filtered(app, text::TITLE);
                     }
                 });
             });
-            ui.add_space(5.0);
+            ui.add_space(6.0);
             widgets::hairline(ui);
-            ui.add_space(5.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(tl!(text::ENGINE)).size(11.0).color(t.text_faint));
-                let (rect, _) = ui.allocate_exact_size(vec2(84.0, 18.0), Sense::hover());
-                ui.painter().rect_filled(rect, t.radius_sm, t.field);
-                // Phase 1 is local only: no Cloud entry, no network.
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, tl!(text::LOCAL_CPU), theme::medium(11.0), t.text_dim);
-            });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             if !has_document {
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-                ui.painter().rect_filled(rect, t.radius_sm, t.field);
-                ui.painter().text(
-                    egui::pos2(rect.left() + 8.0, rect.center().y),
-                    Align2::LEFT_CENTER,
-                    tl!(text::OPEN_IMAGE_TO_START),
-                    theme::medium(11.5),
-                    t.warning,
-                );
-                // Painted text has no accessibility node of its own; name the banner for tests,
-                // screen readers and the control channel.
-                let hint = ui.interact(rect, ui.id().with("retouch-ai-no-document"), Sense::hover());
-                hint.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tl!(text::OPEN_IMAGE_TO_START)));
+                widgets::soft_card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE_TO_START)).size(12.0).color(t.warning)).wrap());
+                });
+                ui.add_space(8.0);
             }
             egui::ScrollArea::vertical().id_salt("retouch-ai-body").max_height(max_height).auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let state = &mut app.ui.retouch_ai;
-                presets(ui, state);
-                ui.add_space(2.0);
+
+                widgets::soft_card(ui, |ui| {
+                    widgets::section_header(ui, tl!(text::PRESET), |_| {});
+                    presets(ui, state);
+                });
+                ui.add_space(8.0);
+
+                widgets::soft_card(ui, |ui| {
+                    widgets::section_header(ui, tl!("Actions"), |_| {});
+                    let gap = ui.spacing().item_spacing.x;
+                    let half = ((ui.available_width() - gap) / 2.0).max(80.0);
+                    ui.horizontal(|ui| {
+                        let analyze_button = ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::ANALYZE), half)).inner;
+                        if analyze_button.clicked() {
+                            actions.push(Action::Analyze);
+                        }
+                        analyze_button.on_hover_text(&analyze_tip);
+                        let run_button = ui.add_enabled_ui(has_document, |ui| widgets::primary_button(ui, tl!(text::RUN_SELECTED), half)).inner;
+                        if run_button.clicked() {
+                            actions.push(Action::Run);
+                        }
+                        run_button.on_hover_text(&run_tip);
+                    });
+                    ui.add_space(4.0);
+                    let only = ui.add_enabled_ui(has_document, |ui| widgets::checkbox(ui, &mut state.selection_only, tl!(text::SELECTION_ONLY))).inner;
+                    only.on_hover_text(tl!(text::SELECTION_ONLY_HINT));
+                    if state.selection_only {
+                        ui.add(egui::Label::new(egui::RichText::new(tl!(text::SELECTION_ONLY_HINT)).size(11.5).color(t.text_dim)).wrap());
+                    }
+                    if !state.status.is_empty() {
+                        ui.add_space(4.0);
+                        widgets::status_note(ui, &state.status, state.status_error);
+                    }
+                });
+                ui.add_space(8.0);
+
+                widgets::section_title(ui, tl!("Tools"));
+                ui.add_space(6.0);
+
+                // The two skin brushes sit above the tool groups: they are the everyday path, and
+                // they stay in the first viewport of the panel.
+                widgets::soft_card(ui, |ui| {
+                    widgets::section_header(ui, tl!(text::SKIN_BRUSHES), |_| {});
+                    let brush = ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::SKIN_SMOOTH_BRUSH), ui.available_width())).inner;
+                    if brush.clicked() {
+                        actions.push(Action::SkinSmoothBrush);
+                    }
+                    brush.on_hover_text(&smooth_tip);
+                    let even = ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::EVEN_TONE_BRUSH), ui.available_width())).inner;
+                    if even.clicked() {
+                        actions.push(Action::EvenToneBrush);
+                    }
+                    even.on_hover_text(&even_tip);
+                    ui.add_space(6.0);
+                    let strength = widgets::slider_row_compact_sized(
+                        ui,
+                        tl!(text::SKIN_SMOOTH_STRENGTH),
+                        &mut state.skin_smooth_amount,
+                        5.0..=100.0,
+                        "%",
+                        widgets::RowGestures::default(),
+                        None,
+                        24.0,
+                    );
+                    strength.on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
+                    let radius = widgets::slider_row_compact_sized(
+                        ui,
+                        tl!(text::SKIN_SMOOTH_RADIUS),
+                        &mut state.skin_smooth_radius,
+                        2.0..=20.0,
+                        " px",
+                        widgets::RowGestures::default(),
+                        None,
+                        24.0,
+                    );
+                    radius.on_hover_text(tl!(text::HINT_SKIN_SMOOTH_RADIUS));
+                    let softness = widgets::slider_row_compact_sized(
+                        ui,
+                        tl!(text::SKIN_SMOOTH_SOFTNESS),
+                        &mut state.skin_smooth_softness,
+                        0.0..=100.0,
+                        "%",
+                        widgets::RowGestures::default(),
+                        None,
+                        24.0,
+                    );
+                    softness.on_hover_text(tl!(text::HINT_SKIN_SMOOTH_SOFTNESS));
+                    ui.add_space(2.0);
+                    widgets::checkbox(ui, &mut state.skin_smooth_even, tl!(text::SKIN_SMOOTH_EVEN)).on_hover_text(tl!(text::HINT_SKIN_TONE));
+                    ui.add_space(6.0);
+                    if widgets::secondary_button(ui, crate::face_reshape_panel::entry_label(), ui.available_width()).clicked() {
+                        actions.push(Action::OpenFaceReshape);
+                    }
+                });
+                ui.add_space(8.0);
+
                 for (index, (key, _)) in TOOL_GROUPS.iter().enumerate() {
                     let title = group_title(index);
-                    if group_header(ui, state, key, title) {
-                        for (i, spec) in TOOLS.iter().enumerate().filter(|(_, spec)| spec.group == index) {
-                            tool_row(ui, state, spec.id, &tool_tips[i]);
-                        }
-                        if index == 0 {
-                            let reshape = widgets::primary_button(ui, crate::face_reshape_panel::entry_label(), ui.available_width());
-                            if reshape.clicked() {
-                                actions.push(Action::OpenFaceReshape);
+                    widgets::soft_card(ui, |ui| {
+                        if group_header(ui, state, key, title) {
+                            for (i, spec) in TOOLS.iter().enumerate().filter(|(_, spec)| spec.group == index) {
+                                tool_row(ui, state, spec.id, &tool_tips[i]);
                             }
-                            ui.add_space(2.0);
-                            let brush =
-                                ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::SKIN_SMOOTH_BRUSH), ui.available_width())).inner;
-                            if brush.clicked() {
-                                actions.push(Action::SkinSmoothBrush);
+                            if index == 2 {
+                                reference_row(ui, state, &mut actions);
                             }
-                            brush.on_hover_text(&smooth_tip);
-                            let even =
-                                ui.add_enabled_ui(has_document, |ui| widgets::secondary_button(ui, tl!(text::EVEN_TONE_BRUSH), ui.available_width())).inner;
-                            if even.clicked() {
-                                actions.push(Action::EvenToneBrush);
-                            }
-                            even.on_hover_text(&even_tip);
-                            ui.horizontal(|ui| {
-                                ui.add_space(20.0);
-                                ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_STRENGTH)).size(11.0).color(t.text_dim));
-                                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
-                                ui.add(egui::Slider::new(&mut state.skin_smooth_amount, 5.0..=100.0).show_value(false).suffix("%"))
-                                    .on_hover_text(tl!(text::HINT_SKIN_SMOOTH));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add_space(20.0);
-                                ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_RADIUS)).size(11.0).color(t.text_dim));
-                                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
-                                ui.add(egui::Slider::new(&mut state.skin_smooth_radius, 2.0..=20.0).show_value(false).suffix(" px"))
-                                    .on_hover_text(tl!(text::HINT_SKIN_SMOOTH_RADIUS));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add_space(20.0);
-                                ui.label(egui::RichText::new(tl!(text::SKIN_SMOOTH_SOFTNESS)).size(11.0).color(t.text_dim));
-                                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(80.0);
-                                ui.add(egui::Slider::new(&mut state.skin_smooth_softness, 0.0..=100.0).show_value(false).suffix("%"))
-                                    .on_hover_text(tl!(text::HINT_SKIN_SMOOTH_SOFTNESS));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.add_space(20.0);
-                                ui.add(egui::Checkbox::new(&mut state.skin_smooth_even, tl!(text::SKIN_SMOOTH_EVEN))).on_hover_text(tl!(text::HINT_SKIN_TONE));
-                            });
-                            ui.add_space(2.0);
                         }
-                        if index == 2 {
-                            reference_row(ui, state, &mut actions);
-                        }
-                    }
+                    });
+                    ui.add_space(8.0);
                 }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let analyze_button = ui.add_enabled(has_document, egui::Button::new(tl!(text::ANALYZE)));
-                    if analyze_button.clicked() {
-                        actions.push(Action::Analyze);
-                    }
-                    analyze_button.on_hover_text(&analyze_tip);
-                    let run_button = ui.add_enabled(has_document, egui::Button::new(tl!(text::RUN_SELECTED)));
-                    if run_button.clicked() {
-                        actions.push(Action::Run);
-                    }
-                    run_button.on_hover_text(&run_tip);
-                });
-                let only = ui.add_enabled(has_document, egui::Checkbox::new(&mut state.selection_only, tl!(text::SELECTION_ONLY)));
-                only.on_hover_text(tl!(text::SELECTION_ONLY_HINT));
-                if state.selection_only {
-                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::SELECTION_ONLY_HINT)).size(10.5).color(Tokens::get(ui.ctx()).text_faint)).wrap());
-                }
-                if !state.status.is_empty() {
-                    let color = if state.status_error { t.danger } else { t.text_dim };
-                    ui.add(egui::Label::new(egui::RichText::new(&state.status).size(11.0).color(color)).wrap());
-                }
+
                 if has_document {
-                    results(ui, state, &mut actions, finger);
+                    widgets::soft_card(ui, |ui| {
+                        results(ui, state, &mut actions, finger);
+                    });
+                    ui.add_space(8.0);
                 }
-                batch(ui, state, &mut actions);
-                ui.add_space(2.0);
+                widgets::soft_card(ui, |ui| {
+                    batch(ui, state, &mut actions);
+                });
+                ui.add_space(4.0);
             });
         });
     if !open {
@@ -1827,6 +1866,75 @@ mod tests {
         assert!(h.query_all_by_label("Open an image to start").next().is_some(), "the no-document hint is shown");
         // The run buttons are disabled with no document: only Batch and Analyze/Presets remain.
         assert_eq!(h.state().ui.retouch_ai.tools.len(), TOOLS.len());
+    }
+
+    #[test]
+    fn panel_keeps_its_sections_and_all_tools_reachable_at_1440_by_900() {
+        let mut app = app();
+        app.run("file.new", json!({"width": 64, "height": 64})).expect("document");
+        app.ui.panels.retouch_ai = true;
+        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let ctx = ui.ctx().clone();
+                if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    return;
+                }
+                window(app, &ctx);
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(4);
+        let rect = h.ctx.memory(|mem| mem.area_rect(egui::Id::new("retouch-ai"))).expect("the panel is open");
+        assert!(rect.bottom() <= 900.0, "the panel stays inside the window: {rect:?}");
+        assert!(rect.width() >= WIDTH, "the panel keeps its width: {rect:?}");
+        for label in [
+            "Retouch AI",
+            "Keyboard Shortcuts…",
+            "Actions",
+            "Analyze",
+            "Run Selected",
+            "Selection only",
+            "Tools",
+            "Skin Brushes",
+            "Skin Smooth Brush",
+            "Even Tone Brush",
+            "Strength",
+            "Effect radius",
+            "Brush softness",
+            "Even skin tone",
+        ] {
+            assert!(h.query_all_by_label(label).next().is_some(), "{label} is visible at 1440×900");
+        }
+        assert_eq!(h.state().ui.retouch_ai.tools.len(), TOOLS.len(), "all 14 tools stay in the panel");
+
+        // Scroll through the body: every tool row and every section is reachable, none is dropped.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..10 {
+            for spec in TOOLS {
+                if h.query_all_by_label(tool_label(spec.id)).next().is_some() {
+                    seen.insert(spec.id);
+                }
+            }
+            for title in ["Preset", "Actions", "Skin Brushes", "Skin & Face", "Eyes & Smile", "Hair, Fabric & Background", "Results", "Batch"] {
+                if h.query_all_by_label(title).next().is_some() {
+                    seen.insert(title);
+                }
+            }
+            h.hover_at(egui::pos2(rect.center().x, rect.top() + 240.0));
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -320.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(2);
+        }
+        assert_eq!(seen.iter().filter(|key| TOOLS.iter().any(|spec| spec.id == **key)).count(), TOOLS.len(), "every tool row is drawn while scrolling");
+        for title in ["Results", "Batch"] {
+            assert!(seen.contains(title), "{title} is reachable in the scrolled panel");
+        }
+        assert!(h.query_all_by_label("Run Batch").next().is_some(), "the batch runner is drawn at the end of the body");
     }
 
     #[test]

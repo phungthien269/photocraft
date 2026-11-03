@@ -10,7 +10,7 @@ use crate::point_curve as curve_edit;
 use crate::state::CurvesEditorState as CurveUi;
 use std::sync::Arc;
 
-use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use photocraft_doc::adjust::{HueRange, ToneSpace};
 use photocraft_doc::{Adjustment, LayerId};
 use photocraft_engine::adjust_params::{self, HUE_RANGES, PHOTO_FILTERS};
@@ -263,16 +263,20 @@ fn brightness_contrast(ui: &mut egui::Ui, v: &mut Value) -> Edit {
 /// A section heading in the Basic Color editor (White Balance / Tone / Presence).
 fn basic_color_section(ui: &mut egui::Ui, text: &str) {
     let t = Tokens::get(ui.ctx());
-    ui.add_space(2.0);
-    widgets::hairline(ui);
-    ui.label(RichText::new(tl!(text)).font(crate::theme::semibold(11.5)).color(t.text_dim));
+    ui.label(RichText::new(tl!(text)).font(crate::theme::semibold(12.5)).color(t.text));
+    ui.add_space(4.0);
+}
+
+/// A one-line Basic Color slider with a little more breathing room than the dense editor default.
+fn basic_color_row(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, decimals: Option<u32>) -> Response {
+    let gestures = widgets::RowGestures { reset: Some(0.0), wheel_step: None, ..Default::default() };
+    widgets::slider_row_compact_sized(ui, label, value, range, suffix, gestures, decimals, 22.0)
 }
 
 /// One of the Basic Color panel's ten one-line sliders: ±100, default 0.
 fn basic_color_slider(ui: &mut egui::Ui, v: &mut Value, key: &str, text: &str, unit: &str) -> Edit {
     let mut x = num(v, key, 0.0).clamp(-100.0, 100.0);
-    let gestures = widgets::RowGestures { reset: Some(0.0), wheel_step: None, ..Default::default() };
-    let r = widgets::slider_row_compact(ui, text, &mut x, -100.0..=100.0, unit, gestures, None);
+    let r = basic_color_row(ui, text, &mut x, -100.0..=100.0, unit, None);
     if r.changed() {
         v[key] = json!(row_value(x, -100.0, 100.0, None));
     }
@@ -282,8 +286,7 @@ fn basic_color_slider(ui: &mut egui::Ui, v: &mut Value, key: &str, text: &str, u
 /// Exposure's ±5 EV slider: a 1/20-stop step, shown with two decimals.
 fn basic_color_exposure(ui: &mut egui::Ui, v: &mut Value) -> Edit {
     let mut x = num(v, "exposure", 0.0).clamp(-5.0, 5.0);
-    let gestures = widgets::RowGestures { reset: Some(0.0), wheel_step: None, ..Default::default() };
-    let r = widgets::slider_row_compact(ui, "Exposure", &mut x, -5.0..=5.0, "", gestures, Some(2));
+    let r = basic_color_row(ui, "Exposure", &mut x, -5.0..=5.0, "", Some(2));
     if r.changed() {
         v["exposure"] = json!(round(x, 0.05));
     }
@@ -299,14 +302,8 @@ const BASIC_COLOR_BANDS: [(&str, f32); 8] =
 
 fn basic_color_tab(ui: &mut egui::Ui) -> usize {
     let id = ui.id().with("basic-color-tab");
-    let mut tab = ui.data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(BASIC_COLOR_TABS.len() - 1);
-    ui.horizontal_wrapped(|ui| {
-        for (i, label) in BASIC_COLOR_TABS.iter().enumerate() {
-            if widgets::pill_tab(ui, label, tab == i).clicked() {
-                tab = i;
-            }
-        }
-    });
+    let tab = ui.data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(BASIC_COLOR_TABS.len() - 1);
+    let tab = widgets::segmented_tabs(ui, id.with("segments"), &BASIC_COLOR_TABS, tab);
     ui.data_mut(|d| d.insert_temp(id, tab));
     tab
 }
@@ -314,33 +311,33 @@ fn basic_color_tab(ui: &mut egui::Ui) -> usize {
 /// The Color Mixer's slider page: one of Hue / Saturation / Luminance, over the eight bands.
 fn basic_color_mixer(ui: &mut egui::Ui, v: &mut Value) -> Edit {
     let id = ui.id().with("basic-color-mixer-tab");
-    let mut tab = ui.data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(2);
-    ui.horizontal_wrapped(|ui| {
-        for (i, label) in ["Hue", "Saturation", "Luminance"].iter().enumerate() {
-            if widgets::pill_tab(ui, label, tab == i).clicked() {
-                tab = i;
-            }
-        }
-    });
+    let tab = ui.data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(2);
+    let tab = widgets::segmented_tabs(ui, id.with("segments"), &["Hue", "Saturation", "Luminance"], tab);
     ui.data_mut(|d| d.insert_temp(id, tab));
+    ui.add_space(8.0);
     let key = ["hslHue", "hslSat", "hslLum"][tab];
     let mut values = basic_color_bands(v, key);
     let mut e = Edit::default();
-    for (i, (name, centre)) in BASIC_COLOR_BANDS.iter().enumerate() {
-        let mut x = values[i].clamp(-100.0, 100.0);
-        let gestures = widgets::RowGestures { reset: Some(0.0), wheel_step: None, ..Default::default() };
-        let r = ui
-            .horizontal(|ui| {
-                let (swatch, _) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::hover());
-                ui.painter().rect_filled(swatch, 2.0, basic_color_band_color(*centre));
-                widgets::slider_row_compact(ui, name, &mut x, -100.0..=100.0, "", gestures, None)
-            })
-            .inner;
-        if r.changed() {
-            values[i] = x.round();
+    let inner = widgets::soft_card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let mut e = Edit::default();
+        for (i, (name, centre)) in BASIC_COLOR_BANDS.iter().enumerate() {
+            let mut x = values[i].clamp(-100.0, 100.0);
+            let r = ui
+                .horizontal(|ui| {
+                    let (swatch, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                    ui.painter().rect_filled(swatch, 2.0, basic_color_band_color(*centre));
+                    basic_color_row(ui, name, &mut x, -100.0..=100.0, "", None)
+                })
+                .inner;
+            if r.changed() {
+                values[i] = x.round();
+            }
+            e.add(Edit::of(&r));
         }
-        e.add(Edit::of(&r));
-    }
+        e
+    });
+    e.add(inner);
     if e.changed {
         v[key] = json!(values);
     }
@@ -371,21 +368,38 @@ fn basic_color_band_color(hue: f32) -> Color32 {
 fn basic_color(ui: &mut egui::Ui, v: &mut Value) -> Edit {
     let mut e = Edit::default();
     if basic_color_tab(ui) == 1 {
-        ui.add_space(2.0);
+        ui.add_space(8.0);
         e.add(basic_color_mixer(ui, v));
         return e;
     }
-    basic_color_section(ui, tl!(crate::basic_color_panel::text::WHITE_BALANCE));
-    e.add(basic_color_slider(ui, v, "temperature", "Temperature", ""));
-    e.add(basic_color_slider(ui, v, "tint", "Tint", ""));
-    basic_color_section(ui, tl!(crate::basic_color_panel::text::TONE));
-    e.add(basic_color_exposure(ui, v));
-    for (key, text) in [("contrast", "Contrast"), ("highlights", "Highlights"), ("shadows", "Shadows"), ("whites", "Whites"), ("blacks", "Blacks")] {
-        e.add(basic_color_slider(ui, v, key, text, ""));
-    }
-    basic_color_section(ui, tl!(crate::basic_color_panel::text::PRESENCE));
-    e.add(basic_color_slider(ui, v, "vibrance", "Vibrance", "%"));
-    e.add(basic_color_slider(ui, v, "saturation", "Saturation", "%"));
+    let white_balance = widgets::soft_card(ui, |ui| {
+        basic_color_section(ui, tl!(crate::basic_color_panel::text::WHITE_BALANCE));
+        let mut edit = Edit::default();
+        edit.add(basic_color_slider(ui, v, "temperature", "Temperature", ""));
+        edit.add(basic_color_slider(ui, v, "tint", "Tint", ""));
+        edit
+    });
+    e.add(white_balance);
+    ui.add_space(8.0);
+    let tone = widgets::soft_card(ui, |ui| {
+        basic_color_section(ui, tl!(crate::basic_color_panel::text::TONE));
+        let mut edit = Edit::default();
+        edit.add(basic_color_exposure(ui, v));
+        for (key, text) in [("contrast", "Contrast"), ("highlights", "Highlights"), ("shadows", "Shadows"), ("whites", "Whites"), ("blacks", "Blacks")] {
+            edit.add(basic_color_slider(ui, v, key, text, ""));
+        }
+        edit
+    });
+    e.add(tone);
+    ui.add_space(8.0);
+    let presence = widgets::soft_card(ui, |ui| {
+        basic_color_section(ui, tl!(crate::basic_color_panel::text::PRESENCE));
+        let mut edit = Edit::default();
+        edit.add(basic_color_slider(ui, v, "vibrance", "Vibrance", "%"));
+        edit.add(basic_color_slider(ui, v, "saturation", "Saturation", "%"));
+        edit
+    });
+    e.add(presence);
     e
 }
 

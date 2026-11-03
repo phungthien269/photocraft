@@ -23,20 +23,20 @@ use crate::{PhotocraftApp, icons, widgets};
 /// Panel width, in points, like Brush Settings' and Retouch AI's fixed cards.
 pub const WIDTH: f32 = 352.0;
 
-/// The chrome above the scrolling body: the title row, the hairline under it and the space
-/// around them, with the spacing that follows it. The body's cap below adds this to the
+/// The chrome above the scrolling body: the title/subtitle row, the hairline under it and the
+/// space around them, with the spacing that follows it. The body's cap below adds this to the
 /// window's height, so it is the measured height of that chrome, not a guess.
-const HEADER_HEIGHT: f32 = 43.0;
+const HEADER_HEIGHT: f32 = 71.0;
 
 /// The height of the panel's body: the mask controls, the Basic/Color Mixer tabs, the three
-/// sections and the ten one-line Basic sliders. In English the paint row wraps, keeping Add to
-/// region and the erase/paint toggle together on a second line. The body is this tall when the
+/// section cards and the ten one-line Basic sliders. In English the paint row wraps, keeping Add
+/// to region and the erase/paint toggle together on a second line. The body is this tall when the
 /// window has the room for it, and shorter — scrolling, never clipping — when it has not.
-pub const BODY_HEIGHT: f32 = 632.0;
+pub const BODY_HEIGHT: f32 = 664.0;
 
 /// Headroom on top of [`BODY_HEIGHT`], so that a small change in the panel's content (the face-key
 /// hint line) does not start the body scrolling.
-const BODY_HEADROOM: f32 = 44.0;
+const BODY_HEADROOM: f32 = 20.0;
 /// The panel's id, so the tests can find its rectangle in egui's memory.
 fn panel_id() -> egui::Id {
     egui::Id::new("basic-color")
@@ -740,7 +740,7 @@ fn face_row(
         let message = if job.message.is_empty() { tl!(text::DETECTING_FACE) } else { job.message.as_str() };
         ui.horizontal_wrapped(|ui| {
             ui.spinner();
-            ui.label(egui::RichText::new(message).size(11.0).color(t.text_dim));
+            ui.label(egui::RichText::new(message).size(11.5).color(t.text_dim));
             if widgets::secondary_button(ui, tl!(text::CANCEL), 0.0).clicked() {
                 actions.push(Action::CancelFaceJob { id: job.id });
             }
@@ -783,15 +783,16 @@ fn face_row(
         })
         .collect();
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new(tl!(text::FACE_MODE)).size(10.5).color(t.text_faint));
-        widgets::dropdown_literal(ui, "basic-color-face-choice", choice, &options, 108.0);
-        ui.label(egui::RichText::new(tl!(text::FACE_COVERAGE)).size(10.5).color(t.text_faint));
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(egui::RichText::new(tl!(text::FACE_MODE)).size(11.5).color(t.text_dim));
+        widgets::dropdown_literal(ui, "basic-color-face-choice", choice, &options, 96.0);
+        ui.label(egui::RichText::new(tl!(text::FACE_COVERAGE)).size(11.5).color(t.text_dim));
         widgets::dropdown(
             ui,
             "basic-color-face-coverage",
             coverage,
             &[(FaceCoverage::FaceNeck, text::FACE_NECK), (FaceCoverage::Face, text::FACE_ONLY)],
-            142.0,
+            124.0,
         );
     });
     if *choice == MULTI_FACE && face_choices > 0 {
@@ -809,17 +810,17 @@ fn face_row(
             actions.push(Action::FaceSelectionChanged);
         }
     }
-    ui.add(egui::Label::new(egui::RichText::new(tl!(text::FACE_KEYS_HINT)).size(10.5).color(t.text_faint)).wrap());
+    ui.add(egui::Label::new(egui::RichText::new(tl!(text::FACE_KEYS_HINT)).size(11.0).color(t.text_dim)).wrap());
 }
 
-/// A compact checkbox for the Mask header row: a 12-point box and a 10.5-point label, so the row
+/// A compact checkbox for the Mask header row: a 14-point box and an 11.5-point label, so the row
 /// keeps the height of the Mask title and the 1440×900 body does not start scrolling.
 fn compact_checkbox(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let l = ui
-        .add(egui::Label::new(egui::RichText::new(tl!(label)).size(10.5).color(t.text_dim)).selectable(false).sense(Sense::click()))
+        .add(egui::Label::new(egui::RichText::new(tl!(label)).size(11.5).color(t.text_dim)).selectable(false).sense(Sense::click()))
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let (rect, resp) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let pressed = resp.is_pointer_button_down_on() || l.is_pointer_button_down_on();
     widgets::check_box(ui.painter(), rect, *on, resp.hovered() || l.hovered(), pressed, &t);
@@ -839,24 +840,14 @@ fn mask_controls(
     face_choices: usize,
     selected: &mut Vec<usize>,
     coverage: &mut FaceCoverage,
-    boxes_visible: &mut bool,
     erase_mode: bool,
     job: Option<&JobInfo>,
     tips: &FaceTips,
     actions: &mut Vec<Action>,
 ) {
-    let t = Tokens::get(ui.ctx());
-    widgets::hairline(ui);
-    ui.add_space(2.0);
-    ui.allocate_ui_with_layout(vec2(ui.available_width(), 15.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.label(egui::RichText::new(tl!(text::MASK)).font(theme::semibold(12.0)).color(t.text));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            compact_checkbox(ui, boxes_visible, text::FACE_BOXES);
-        });
-    });
     if !info.has_mask {
         // Vector mask only, or none: painting needs a pixel mask, so the paint controls wait.
-        ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_PIXEL_MASK)).size(11.0).color(t.text_faint)).wrap());
+        ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_PIXEL_MASK)).size(11.5).color(Tokens::get(ui.ctx()).text_dim)).wrap());
         face_row(ui, info, choice, face_choices, selected, coverage, job, true, tips, actions);
         return;
     }
@@ -886,7 +877,8 @@ fn mask_controls(
     });
     face_row(ui, info, choice, face_choices, selected, coverage, job, false, tips, actions);
     let hint = if info.overlay { tl!(text::SELECTION_HINT) } else { tl!(text::HINT) };
-    ui.add(egui::Label::new(egui::RichText::new(hint).size(10.5).color(t.text_faint)).wrap());
+    let t = Tokens::get(ui.ctx());
+    ui.add(egui::Label::new(egui::RichText::new(hint).size(11.5).color(t.text_dim)).wrap());
 }
 
 /// Numbered face boxes over the canvas: a click selects that face in the panel's dropdown. The
@@ -1074,7 +1066,8 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // edge, which is where the panel opens (or where the user dragged it to).
     let default_top = canvas.top() + 8.0;
     let panel_top = ctx.memory(|mem| mem.area_rect(panel_id())).map_or(default_top, |rect| rect.top());
-    let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT).max(0.0);
+    // The extra point covers the frame stroke's rounding, so a short window fills to its edge.
+    let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT).max(0.0) + 1.0;
     let body_height = (BODY_HEIGHT + BODY_HEADROOM).min(room);
     egui::Window::new(tl!(text::TITLE))
         .id(panel_id())
@@ -1090,79 +1083,86 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .min_height(HEADER_HEIGHT + body_height + frame_margin)
         .show(ctx, |ui| {
             ui.set_width(WIDTH);
+            ui.spacing_mut().item_spacing.y = 2.0;
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(tl!(text::TITLE)).font(theme::semibold(13.0)).color(t.text));
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(egui::RichText::new(tl!(text::TITLE)).font(theme::semibold(14.0)).color(t.text));
+                    ui.label(egui::RichText::new(tl!("Adjustments")).size(11.5).color(t.text_dim));
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, "x", 20.0, false, tl!(text::CLOSE)).clicked() {
                         open = false;
                     }
-                    // Color Presets lives in its own window; this only opens it, never toggles it off.
-                    if widgets::compact_button(ui, tl!(text::PRESETS), 20.0).clicked() {
-                        app.ui.panels.color_presets = true;
-                    }
-                    if crate::prefs_ui::shortcuts_button(ui) {
+                });
+            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                // Color Presets lives in its own window; this only opens it, never toggles it off.
+                if widgets::secondary_button(ui, tl!(text::PRESETS), 0.0).clicked() {
+                    app.ui.panels.color_presets = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::secondary_button(ui, tl!("Keyboard Shortcuts…"), 0.0).clicked() {
                         crate::prefs_ui::open_shortcuts_filtered(app, text::TITLE);
                     }
                 });
             });
-            ui.add_space(5.0);
+            ui.add_space(3.0);
             widgets::hairline(ui);
-            ui.add_space(5.0);
+            ui.add_space(3.0);
             if !has_document {
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-                ui.painter().rect_filled(rect, t.radius_sm, t.field);
-                ui.painter().text(
-                    egui::pos2(rect.left() + 8.0, rect.center().y),
-                    Align2::LEFT_CENTER,
-                    tl!(text::OPEN_IMAGE_TO_START),
-                    theme::medium(11.5),
-                    t.warning,
-                );
-                // Painted text has no accessibility node of its own; name the banner for tests,
-                // screen readers and the control channel.
-                let hint = ui.interact(rect, ui.id().with("basic-color-no-document"), Sense::hover());
-                hint.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tl!(text::OPEN_IMAGE_TO_START)));
+                widgets::soft_card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE_TO_START)).size(12.0).color(t.warning)).wrap());
+                });
                 return;
             }
             let body = egui::ScrollArea::vertical().id_salt("basic-color-body").max_height(body_height).auto_shrink([false, true]).show(ui, |ui| {
-                ui.set_width(ui.available_width());
                 match &active {
                     Some(info) => {
                         ui.horizontal(|ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(&info.name).size(12.0).color(t.text)).truncate());
+                            ui.add(egui::Label::new(egui::RichText::new(&info.name).size(12.5).color(t.text)).truncate());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if widgets::secondary_button(ui, tl!(text::RESET), 0.0).clicked() {
                                     actions.push(Action::Reset { layer: info.id });
                                 }
                             });
                         });
-                        mask_controls(
-                            ui,
-                            info,
-                            &mut face_choice,
-                            face_choices,
-                            &mut selected_faces,
-                            &mut face_coverage,
-                            &mut face_boxes_visible,
-                            erase_mode,
-                            face_job.as_ref(),
-                            &tips,
-                            &mut actions,
-                        );
-                        ui.add_space(4.0);
+                        ui.add_space(8.0);
+                        widgets::soft_card(ui, |ui| {
+                            widgets::section_header(ui, tl!(text::MASK), |ui| {
+                                compact_checkbox(ui, &mut face_boxes_visible, text::FACE_BOXES);
+                            });
+                            mask_controls(
+                                ui,
+                                info,
+                                &mut face_choice,
+                                face_choices,
+                                &mut selected_faces,
+                                &mut face_coverage,
+                                erase_mode,
+                                face_job.as_ref(),
+                                &tips,
+                                &mut actions,
+                            );
+                        });
+                        ui.add_space(8.0);
                         crate::adjust_editors::layer_editor(app, ui, info.id, &info.adjustment);
                     }
                     None => {
-                        ui.add(egui::Label::new(egui::RichText::new(tl!(text::OTHER_LAYER)).size(11.5).color(t.text_dim)).wrap());
-                        ui.add_space(4.0);
-                        if widgets::primary_button(ui, tl!(text::CREATE), 0.0).clicked() {
-                            actions.push(Action::Create);
-                        }
+                        widgets::soft_card(ui, |ui| {
+                            ui.add(egui::Label::new(egui::RichText::new(tl!(text::OTHER_LAYER)).size(12.0).color(t.text_dim)).wrap());
+                            ui.add_space(6.0);
+                            if widgets::primary_button(ui, tl!(text::CREATE), 0.0).clicked() {
+                                actions.push(Action::Create);
+                            }
+                        });
                     }
                 }
                 if !app.ui.basic_color.status.is_empty() {
-                    let color = if app.ui.basic_color.status_error { t.danger } else { t.text_dim };
-                    ui.add(egui::Label::new(egui::RichText::new(&app.ui.basic_color.status).size(11.0).color(color)).wrap());
+                    ui.add_space(6.0);
+                    widgets::status_note(ui, &app.ui.basic_color.status, app.ui.basic_color.status_error);
                 }
                 ui.add_space(2.0);
             });

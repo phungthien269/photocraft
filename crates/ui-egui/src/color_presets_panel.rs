@@ -31,15 +31,19 @@ pub const WIDTH: f32 = 340.0;
 /// The panel's key in the shared preset browser state.
 const PANEL: &str = "color";
 
-/// The chrome above the scrolling body (title row, hairline and the space around them).
-const HEADER_HEIGHT: f32 = 43.0;
+/// The chrome above the scrolling body (the title/subtitle row, the hairline and the space around
+/// them), plus the library toolbar that stays in view above the body.
+const HEADER_HEIGHT: f32 = 50.0;
+const TOOLBAR_HEIGHT: f32 = 78.0;
+/// The no-document banner above the toolbar, when it is shown.
+const NO_DOCUMENT_HEIGHT: f32 = 50.0;
 
 /// The body's cap: the browser scrolls and the batch stays one wheel away; the body scrolls too
 /// in a short window, so nothing is pushed off-screen.
-const MAX_BODY: f32 = 620.0;
+const MAX_BODY: f32 = 610.0;
 
-/// The browser's default card size: large enough for the look hint and its layer count.
-const DEFAULT_THUMB: f32 = 64.0;
+/// The browser's default card size: large enough for a real preview, the name and its layer count.
+const DEFAULT_THUMB: f32 = 96.0;
 
 /// The batch formats. PSD is deliberately absent: it cannot carry Basic Color layers.
 pub(crate) const FORMATS: [&str; 4] = ["same", "jpg", "png", "tiff"];
@@ -58,8 +62,10 @@ fn panel_id() -> egui::Id {
 /// string.
 pub(crate) mod text {
     pub const TITLE: &str = "Color Presets";
+    pub const SUBTITLE: &str = "Color and tone looks";
     pub const CLOSE: &str = "Close";
     pub const SAVE: &str = "Save current look";
+    pub const SAVE_CARD: &str = "Save";
     pub const NEW: &str = "Create new color preset from the current look";
     pub const OPEN_IMAGE: &str = "Open an image to apply or save a look.";
     pub const NO_PRESETS: &str = "No presets yet. Save the current look to create one.";
@@ -114,8 +120,10 @@ pub(crate) mod text {
     #[cfg(test)]
     pub const ALL: &[&str] = &[
         TITLE,
+        SUBTITLE,
         CLOSE,
         SAVE,
+        SAVE_CARD,
         NEW,
         OPEN_IMAGE,
         NO_PRESETS,
@@ -1051,7 +1059,15 @@ fn fit_image(rect: Rect, image: egui::Vec2) -> Rect {
 /// The item card: the preset rendered through the current image when that preview exists; otherwise
 /// the current image thumbnail washed with the look's shadow/highlight colours, or a neutral look
 /// gradient when there is no document thumbnail yet.
-fn paint_item(ui: &egui::Ui, rect: Rect, item: &LibraryItem, t: &Tokens, preview: Option<&egui::TextureHandle>, thumbnail: Option<&egui::TextureHandle>) {
+fn paint_item(
+    ui: &egui::Ui,
+    rect: Rect,
+    item: &LibraryItem,
+    t: &Tokens,
+    preview: Option<&egui::TextureHandle>,
+    thumbnail: Option<&egui::TextureHandle>,
+    selected: bool,
+) {
     let stops = item.hint.map_or_else(|| neutral_stops(t), look_stops);
     if let Some(tex) = preview {
         // A real render: fill the letterbox with the field colour and keep the image's aspect.
@@ -1072,44 +1088,67 @@ fn paint_item(ui: &egui::Ui, rect: Rect, item: &LibraryItem, t: &Tokens, preview
     if rect.width() < 40.0 || rect.height() < 28.0 {
         return;
     }
-    // The name sits on a scrim at the top, elided to the card; the layer count below.
-    let name_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + 13.0));
+    // The name sits on a scrim at the top, elided to the card; the layer count in a pill below.
+    // Both strips are dark in every theme, so the card's own labels stay light.
+    let card_text = Color32::from_rgb(245, 245, 245);
+    let name_h = (rect.height() * 0.20).clamp(16.0, 22.0);
+    let name_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + name_h));
     ui.painter().rect_filled(name_rect, 0.0, t.scrim);
-    let galley = crate::tab_strip::elided(ui, &item.name, FontId::proportional(8.5), t.text, rect.width() - 6.0);
-    ui.painter().galley(pos2(name_rect.center().x - galley.size().x / 2.0, name_rect.center().y - galley.size().y / 2.0), galley, t.text);
-    let strip_h = (rect.height() * 0.32).clamp(12.0, 18.0);
+    let name_size = if rect.width() >= 72.0 { 10.5 } else { 9.0 };
+    let galley = crate::tab_strip::elided(ui, &item.name, FontId::proportional(name_size), card_text, rect.width() - 10.0);
+    ui.painter().galley(pos2(name_rect.center().x - galley.size().x / 2.0, name_rect.center().y - galley.size().y / 2.0), galley, card_text);
+    let strip_h = (rect.height() * 0.26).clamp(16.0, 22.0);
     let strip = Rect::from_min_max(pos2(rect.left(), rect.bottom() - strip_h), rect.max);
     ui.painter().rect_filled(strip, 0.0, t.scrim);
     let label =
         if item.layer_count == 1 { tl!(text::ONE_LAYER).to_string() } else { crate::i18n::fmt(tl!(text::LAYERS), &[("n", &item.layer_count.to_string())]) };
-    ui.painter().text(pos2(rect.center().x, strip.center().y), Align2::CENTER_CENTER, label, FontId::proportional(8.5), t.text);
+    let count_size = if rect.width() >= 72.0 { 10.0 } else { 9.0 };
+    let text_right = if selected && rect.width() >= 64.0 { strip.right() - 15.0 } else { strip.right() - 5.0 };
+    ui.painter().text(pos2(text_right, strip.center().y), Align2::RIGHT_CENTER, label, FontId::proportional(count_size), card_text);
+    // A check disc makes the selection readable even when the card's accent outline touches a
+    // neighbouring card.
+    if selected && rect.width() >= 64.0 {
+        let center = pos2(strip.right() - 9.0, strip.center().y);
+        ui.painter().circle_filled(center, 5.5, t.accent);
+        let tick = Stroke::new(1.3, Color32::WHITE);
+        ui.painter().line_segment([center + vec2(-2.4, 0.2), center + vec2(-0.6, 2.0)], tick);
+        ui.painter().line_segment([center + vec2(-0.6, 2.0), center + vec2(2.6, -1.8)], tick);
+    }
 }
 
 fn folder_field(ui: &mut egui::Ui, label: &str, value: &mut String, pick: Action, actions: &mut Vec<Action>) {
-    ui.label(egui::RichText::new(label).size(11.0).color(Tokens::get(ui.ctx()).text_dim));
+    let t = Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(label).size(11.5).color(t.text_dim));
+    ui.add_space(1.0);
     ui.horizontal(|ui| {
         // The Browse button's width depends on the language, so measure it rather than guessing:
         // together with the gap it is what the text field must leave free.
         let reserve = widgets::button_width(ui, &[tl!(text::BROWSE)]) + ui.spacing().item_spacing.x;
         let width = (ui.available_width() - reserve).max(90.0);
-        ui.add_sized([width, 20.0], egui::TextEdit::singleline(value).hint_text(tl!(text::FOLDER_PATH)));
-        if ui.button(tl!(text::BROWSE)).clicked() {
+        ui.add_sized([width, 26.0], egui::TextEdit::singleline(value).hint_text(tl!(text::FOLDER_PATH)));
+        if widgets::secondary_button(ui, tl!(text::BROWSE), 0.0).clicked() {
             actions.push(pick);
         }
     });
+    ui.add_space(2.0);
 }
 
+/// The batch card's content: folder fields, format, cleanup choices and the live progress row.
 fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document: bool, run_tip: &str, actions: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
-    widgets::hairline(ui);
     let open = state.batch_open;
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().rect_filled(rect, t.radius_sm, t.hover.gamma_multiply(0.5));
     }
-    let chevron = Rect::from_center_size(pos2(rect.left() + 7.0, rect.center().y), vec2(12.0, 12.0));
-    icons::paint(ui, chevron, if open { "chevron-down" } else { "chevron-right" }, 11.0, t.text_dim);
-    ui.painter().text(pos2(rect.left() + 18.0, rect.center().y), Align2::LEFT_CENTER, tl!(text::BATCH), theme::semibold(12.0), t.text);
+    let chevron = Rect::from_center_size(pos2(rect.left() + 8.0, rect.center().y), vec2(14.0, 14.0));
+    icons::paint(ui, chevron, if open { "chevron-down" } else { "chevron-right" }, 12.0, t.text_dim);
+    ui.painter().text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, tl!(text::BATCH), theme::semibold(12.5), t.text);
+    let summary = if state.batch_running { Some(format!("{:.0}%", state.batch_progress * 100.0)) } else { None };
+    if let Some(summary) = summary {
+        ui.painter().text(pos2(rect.right() - 4.0, rect.center().y), Align2::RIGHT_CENTER, summary, theme::mono(11.0), t.text_dim);
+    }
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, tl!(text::BATCH)));
     if response.clicked() {
         state.batch_open = !state.batch_open;
@@ -1117,11 +1156,33 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
     if !state.batch_open {
         return;
     }
-    ui.add_space(3.0);
+    ui.add_space(4.0);
+    if state.batch_running {
+        ui.add(egui::ProgressBar::new(state.batch_progress).desired_width(ui.available_width()).show_percentage());
+        ui.add_space(4.0);
+        let gap = ui.spacing().item_spacing.x;
+        let half = ((ui.available_width() - gap) / 2.0).max(70.0);
+        ui.horizontal(|ui| {
+            let pause_label = if state.batch_paused { tl!(text::RESUME) } else { tl!(text::PAUSE) };
+            let pause = widgets::secondary_button(ui, pause_label, half);
+            if pause.on_hover_text(tl!(text::PAUSE_HINT)).clicked() {
+                actions.push(if state.batch_paused { Action::ResumeBatch } else { Action::PauseBatch });
+            }
+            if widgets::secondary_button(ui, tl!("Cancel"), half).clicked() {
+                actions.push(Action::CancelBatch);
+            }
+        });
+        ui.add_space(2.0);
+        ui.add(egui::Label::new(egui::RichText::new(tl!(text::PAUSE_HINT)).size(10.5).color(t.text_faint)).wrap());
+        if !state.batch_message.is_empty() {
+            ui.add(egui::Label::new(egui::RichText::new(&state.batch_message).size(11.0).color(t.text_dim)).wrap());
+        }
+        ui.add_space(4.0);
+    }
     folder_field(ui, tl!(text::INPUT_FOLDER), &mut state.batch_input, Action::PickInput, actions);
     folder_field(ui, tl!(text::OUTPUT_FOLDER), &mut state.batch_output, Action::PickOutput, actions);
     ui.horizontal(|ui| {
-        ui.label(tl!(text::FORMAT));
+        ui.label(egui::RichText::new(tl!(text::FORMAT)).size(11.5).color(t.text_dim));
         let mut chosen = None;
         egui::ComboBox::from_id_salt("color-presets-batch-format")
             .selected_text(format_label(&state.batch_format))
@@ -1138,35 +1199,23 @@ fn batch_section(ui: &mut egui::Ui, state: &mut ColorPresetsState, has_document:
             state.batch_format = id;
         }
     });
-    ui.checkbox(&mut state.include_subfolders, tl!(text::INCLUDE_SUBFOLDERS));
-    ui.checkbox(&mut state.keep_partial, tl!(text::KEEP_PARTIAL));
-    let run = ui.add_enabled(has_document && !state.batch_running, egui::Button::new(tl!(text::RUN))).on_hover_text(run_tip);
-    if run.clicked() {
+    ui.add_space(2.0);
+    widgets::checkbox(ui, &mut state.include_subfolders, tl!(text::INCLUDE_SUBFOLDERS));
+    widgets::checkbox(ui, &mut state.keep_partial, tl!(text::KEEP_PARTIAL));
+    ui.add_space(4.0);
+    let run = ui.add_enabled_ui(has_document && !state.batch_running, |ui| widgets::secondary_button(ui, tl!(text::RUN), ui.available_width())).inner;
+    if run.on_hover_text(run_tip).clicked() {
         actions.push(Action::RunBatch);
     }
-    if state.batch_running {
-        ui.horizontal(|ui| {
-            ui.add(egui::ProgressBar::new(state.batch_progress).desired_width(140.0).show_percentage());
-            let pause_label = if state.batch_paused { tl!(text::RESUME) } else { tl!(text::PAUSE) };
-            let pause = widgets::secondary_button(ui, pause_label, 0.0);
-            if pause.on_hover_text(tl!(text::PAUSE_HINT)).clicked() {
-                actions.push(if state.batch_paused { Action::ResumeBatch } else { Action::PauseBatch });
-            }
-            if widgets::secondary_button(ui, tl!("Cancel"), 0.0).clicked() {
-                actions.push(Action::CancelBatch);
-            }
-        });
-        ui.add(egui::Label::new(egui::RichText::new(tl!(text::PAUSE_HINT)).size(10.5).color(t.text_faint)).wrap());
-        if !state.batch_message.is_empty() {
-            ui.add(egui::Label::new(egui::RichText::new(&state.batch_message).size(11.0).color(t.text_dim)).wrap());
+    if state.batch_resume_ready && !state.batch_running {
+        ui.add_space(4.0);
+        if widgets::secondary_button(ui, tl!(text::RESUME), ui.available_width()).clicked() {
+            actions.push(Action::ResumeKeptBatch);
         }
     }
-    if state.batch_resume_ready && !state.batch_running && widgets::secondary_button(ui, tl!(text::RESUME), 0.0).clicked() {
-        actions.push(Action::ResumeKeptBatch);
-    }
     if !state.batch_status.is_empty() {
-        let color = if state.batch_status_error { t.danger } else { t.text_dim };
-        ui.add(egui::Label::new(egui::RichText::new(&state.batch_status).size(11.0).color(color)).wrap());
+        ui.add_space(4.0);
+        widgets::status_note(ui, &state.batch_status, state.batch_status_error);
     }
 }
 
@@ -1212,6 +1261,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     previews.begin(doc.map(|(doc, revision)| (doc.id, revision)));
     let mut st = std::mem::take(&mut app.ui.presets_ui);
     st.sizes.entry(PANEL.to_string()).or_insert(DEFAULT_THUMB);
+    let selected_name = st.selected.get(PANEL).cloned();
     let mut events = Vec::new();
     let mut actions = Vec::new();
     let mut open = true;
@@ -1222,12 +1272,19 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let frame_margin = frame.total_margin().sum().y;
     let default_top = canvas.top() + 24.0;
     let panel_top = ctx.memory(|mem| mem.area_rect(panel_id())).map_or(default_top, |rect| rect.top());
-    let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT).max(0.0);
+    let room = (ctx.content_rect().bottom()
+        - panel_top.min(default_top)
+        - frame_margin
+        - HEADER_HEIGHT
+        - TOOLBAR_HEIGHT
+        - if has_document { 0.0 } else { NO_DOCUMENT_HEIGHT })
+    .max(0.0);
     let body_height = MAX_BODY.min(room);
     let thumb = &mut |ui: &egui::Ui, rect: Rect, gi: usize, ii: usize| {
         if let Some(item) = shown.groups.get(gi).and_then(|group| group.items.get(ii)) {
             let preview = doc.and_then(|(doc, revision)| previews.texture(ui.ctx(), doc, revision, item));
-            paint_item(ui, rect, item, &t, preview.as_ref(), preview_tex.as_ref());
+            let selected = selected_name.as_deref() == Some(item.name.as_str());
+            paint_item(ui, rect, item, &t, preview.as_ref(), preview_tex.as_ref(), selected);
         }
     };
     egui::Window::new(tl!(text::TITLE))
@@ -1237,64 +1294,80 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .collapsible(false)
         .frame(frame)
         .default_pos(pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), default_top))
-        .min_height(HEADER_HEIGHT + body_height + frame_margin)
+        .min_height(HEADER_HEIGHT + TOOLBAR_HEIGHT + body_height + frame_margin)
         .show(ctx, |ui| {
             ui.set_width(WIDTH);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(tl!(text::TITLE)).font(theme::semibold(13.0)).color(t.text));
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(egui::RichText::new(tl!(text::TITLE)).font(theme::semibold(14.0)).color(t.text));
+                    ui.label(egui::RichText::new(tl!(text::SUBTITLE)).size(11.5).color(t.text_dim));
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, "x", 20.0, false, tl!(text::CLOSE)).clicked() {
                         open = false;
                     }
-                    if crate::prefs_ui::shortcuts_button(ui) {
+                    if widgets::secondary_button(ui, tl!("Keyboard Shortcuts…"), 0.0).clicked() {
                         shortcuts = true;
                     }
                 });
             });
-            ui.add_space(5.0);
+            ui.add_space(6.0);
             widgets::hairline(ui);
-            ui.add_space(5.0);
+            ui.add_space(6.0);
             if !has_document {
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-                ui.painter().rect_filled(rect, t.radius_sm, t.field);
-                ui.painter().text(pos2(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, tl!(text::OPEN_IMAGE), theme::medium(11.5), t.warning);
-                // Painted text has no accessibility node of its own; name the banner for tests,
-                // screen readers and the control channel.
-                let hint = ui.interact(rect, ui.id().with("color-presets-no-document"), Sense::hover());
-                hint.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tl!(text::OPEN_IMAGE)));
+                widgets::soft_card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE)).size(12.0).color(t.warning)).wrap());
+                });
+                ui.add_space(6.0);
             }
-            let body = egui::ScrollArea::vertical().id_salt("color-presets-body").max_height(body_height).auto_shrink([false, true]).show(ui, |ui| {
+            // Search and LUT import stay above the scrolling body: both are library-wide actions.
+            widgets::soft_card(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let save = ui.add_enabled_ui(can_save, |ui| widgets::primary_button(ui, tl!(text::SAVE), ui.available_width())).inner;
-                let save = save.on_hover_text(save_hint.as_str());
-                if save.clicked() {
-                    actions.push(Action::Save);
-                }
-                if has_document && !can_save {
-                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_LAYERS)).size(10.5).color(t.text_faint)).wrap());
-                }
-                ui.add_space(2.0);
+                ui.add_sized([ui.available_width(), 26.0], egui::TextEdit::singleline(&mut app.ui.color_presets.search).hint_text(tl!(text::SEARCH)));
+                ui.add_space(4.0);
                 if widgets::secondary_button(ui, tl!(text::IMPORT_LUTS), ui.available_width()).clicked() {
                     actions.push(Action::ImportLuts);
                 }
-                ui.add_space(3.0);
-                if !app.ui.color_presets.status.is_empty() {
-                    let color = if app.ui.color_presets.status_error { t.danger } else { t.text_dim };
-                    ui.add(egui::Label::new(egui::RichText::new(&app.ui.color_presets.status).size(11.0).color(color)).wrap());
+            });
+            ui.add_space(6.0);
+            let body = egui::ScrollArea::vertical().id_salt("color-presets-body").max_height(body_height).auto_shrink([false, true]).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 4.0;
+                widgets::soft_card(ui, |ui| {
+                    widgets::section_header(ui, tl!(text::SAVE_CARD), |_| {});
+                    let save = ui.add_enabled_ui(can_save, |ui| widgets::primary_button(ui, tl!(text::SAVE), ui.available_width())).inner;
+                    let save = save.on_hover_text(save_hint.as_str());
+                    if save.clicked() {
+                        actions.push(Action::Save);
+                    }
+                    if has_document && !can_save {
+                        ui.add_space(2.0);
+                        widgets::status_note(ui, tl!(text::NO_LAYERS), false);
+                    }
+                    if !app.ui.color_presets.status.is_empty() {
+                        ui.add_space(4.0);
+                        widgets::status_note(ui, &app.ui.color_presets.status, app.ui.color_presets.status_error);
+                    }
+                });
+                ui.add_space(6.0);
+                if library.total == 0 || shown.total == 0 {
+                    widgets::soft_card(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let message = if library.total == 0 { tl!(text::NO_PRESETS) } else { tl!(text::NO_MATCH) };
+                        ui.add(egui::Label::new(egui::RichText::new(message).size(12.0).color(t.text_dim)).wrap());
+                    });
+                    ui.add_space(6.0);
                 }
-                ui.add(egui::TextEdit::singleline(&mut app.ui.color_presets.search).hint_text(tl!(text::SEARCH)).desired_width(ui.available_width()));
-                ui.add_space(3.0);
-                if library.total == 0 {
-                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_PRESETS)).size(11.0).color(t.text_faint)).wrap());
-                    ui.add_space(2.0);
-                } else if shown.total == 0 {
-                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::NO_MATCH)).size(11.0).color(t.text_faint)).wrap());
-                    ui.add_space(2.0);
-                }
-                let max_h = (body_height - 296.0).clamp(90.0, 280.0);
+                let max_h = (body_height - 340.0).clamp(90.0, 300.0);
                 events = preset_panels::browser(ui, &mut st, PANEL, &groups, Place { canvas, max_h, new_tip: tl!(text::NEW), flush: false }, thumb);
-                batch_section(ui, &mut app.ui.color_presets, has_document, run_hint.as_str(), &mut actions);
-                ui.add_space(2.0);
+                ui.add_space(6.0);
+                widgets::soft_card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    batch_section(ui, &mut app.ui.color_presets, has_document, run_hint.as_str(), &mut actions);
+                });
+                ui.add_space(10.0);
             });
             // What the tests measure: the body's viewport and the height of all its content.
             #[cfg(test)]
@@ -1930,6 +2003,25 @@ mod tests {
         h.run_steps(2);
         let st = h.state().session.active().expect("document");
         assert_eq!(st.doc.layers.iter().filter(|layer| layer.name == "Preset • Warm Portrait").count(), 1);
+    }
+
+    /// The redesigned header, library toolbar and batch progress stay in the panel at 1440×900.
+    #[test]
+    fn search_import_and_batch_progress_stay_visible_at_1440_by_900() {
+        let mut app = app_with_document();
+        app.ui.presets_ui.selected.insert(PANEL.into(), "Warm Portrait".into());
+        app.ui.color_presets.batch_input = "/photos/in".into();
+        app.ui.color_presets.batch_output = "/photos/out".into();
+        app.ui.color_presets.batch_running = true;
+        app.ui.color_presets.batch_progress = 0.42;
+        app.ui.color_presets.batch_message = text::RUNNING.into();
+        let h = harness(app, vec2(1440.0, 900.0));
+        let rect = h.ctx.memory(|mem| mem.area_rect(panel_id())).expect("the panel is open");
+        assert!(rect.bottom() <= 900.0, "the panel stays inside the window: {rect:?}");
+        for label in [text::TITLE, text::SUBTITLE, text::SAVE, text::IMPORT_LUTS, text::BATCH, text::PAUSE, "Cancel", text::RUNNING] {
+            assert!(h.query_all_by_label(label).next().is_some(), "{label} is in the panel");
+        }
+        assert!(h.query_all_by_label("Keyboard Shortcuts…").next().is_some(), "the header keeps its shortcut button");
     }
 
     /// The panel's data keys skip the literal scanner (the other complete catalogs fall back to
