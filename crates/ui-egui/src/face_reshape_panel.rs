@@ -948,7 +948,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             if !has_document {
                 widgets::soft_card(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(egui::RichText::new(open_hint()).size(12.0).color(t.warning)).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(open_hint()).size(12.0).color(t.text_dim)).wrap());
                 });
                 return;
             }
@@ -990,6 +990,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     ui.add_space(6.0);
                 }
             });
+            if body.content_size.y > body.inner_rect.height() + 0.5 && body.state.offset.y + body.inner_rect.height() < body.content_size.y - 1.0 {
+                widgets::scroll_fade_bottom(ui, body.inner_rect);
+            }
             #[cfg(test)]
             ui.ctx().data_mut(|d| d.insert_temp(panel_id().with("body"), (body.inner_rect, body.content_size)));
             #[cfg(not(test))]
@@ -1224,7 +1227,13 @@ fn slider_row(ui: &mut egui::Ui, key: &'static str, value: &mut f32) -> RowOutco
         let field = FIELD_WIDTH;
         let slider_width = (ui.available_width() - field - ui.spacing().item_spacing.x).max(60.0);
         ui.spacing_mut().slider_width = slider_width;
-        let slider = ui.add(egui::Slider::new(value, -100.0..=100.0).step_by(1.0).show_value(false)).labelled_by(label_response.id);
+        let slider = ui
+            .scope(|ui| {
+                widgets::style_slider(ui);
+                ui.add(egui::Slider::new(value, -100.0..=100.0).step_by(1.0).show_value(false))
+            })
+            .inner
+            .labelled_by(label_response.id);
         if slider.double_clicked() {
             *value = 0.0;
             out.reset = true;

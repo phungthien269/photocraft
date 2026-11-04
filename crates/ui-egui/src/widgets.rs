@@ -340,7 +340,9 @@ pub fn section_title(ui: &mut Ui, title: &str) {
 /// A readable status/empty-state line: normal notes are dim, errors get a soft danger panel.
 pub fn status_note(ui: &mut Ui, text: &str, error: bool) {
     let t = Tokens::get(ui.ctx());
-    let color = if error { t.danger } else { t.text_dim };
+    // The red tint and outline carry the error; the message itself stays in body text so it keeps
+    // AA contrast on the pale light-theme cards.
+    let color = if error { t.text } else { t.text_dim };
     let tint = |alpha: u8| Color32::from_rgba_unmultiplied(t.danger.r(), t.danger.g(), t.danger.b(), alpha);
     let frame = egui::Frame::NONE
         .fill(if error { tint(28) } else { Color32::TRANSPARENT })
@@ -351,6 +353,36 @@ pub fn status_note(ui: &mut Ui, text: &str, error: bool) {
         ui.set_width(ui.available_width());
         ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).wrap());
     });
+}
+
+/// Fade the bottom edge of a scrolling body into the panel card, so a row cut by the fold reads as
+/// "more below" instead of a hard clip. Call after the `ScrollArea` has drawn, only when its
+/// content is taller than the viewport and the view is not already at the end.
+pub fn scroll_fade_bottom(ui: &Ui, body: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let h = 14.0_f32.min(body.height() * 0.25);
+    if h <= 0.0 {
+        return;
+    }
+    let rect = Rect::from_min_max(pos2(body.left(), body.bottom() - h), body.max);
+    let clear = Color32::from_rgba_unmultiplied(t.card.r(), t.card.g(), t.card.b(), 0);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), clear);
+    mesh.colored_vertex(rect.right_top(), clear);
+    mesh.colored_vertex(rect.right_bottom(), t.card);
+    mesh.colored_vertex(rect.left_bottom(), t.card);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().with_clip_rect(body).add(mesh);
+}
+
+/// Give an egui slider the panels' rail. Dark themes keep the accent-filled track they had; light
+/// themes use `text_dim`, because egui paints the filled side with `selection.bg_fill`, which the
+/// soft light themes set to a translucent accent that all but disappears on white. The shared
+/// sliders in these panels already fill with `text_dim`, so the light themes match them.
+pub fn style_slider(ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
+    ui.visuals_mut().selection.bg_fill = if t.dark() { t.accent } else { t.text_dim };
 }
 
 /// Monospace numeric field with a dimmed unit suffix, Photoshop style. Drag to scrub. Typed

@@ -1089,17 +1089,25 @@ fn paint_item(
         return;
     }
     // The name sits on a scrim at the top, elided to the card; the layer count in a pill below.
-    // Both strips are dark in every theme, so the card's own labels stay light.
+    // Both strips are dark in every theme, so the card's own labels stay light. `scrim` alone is
+    // only ~43% black in the light themes (#919191 over white), under 3:1 for 10 pt white text, so
+    // light themes lay it down twice (#525252, over 7:1) while dark themes keep one pass.
     let card_text = Color32::from_rgb(245, 245, 245);
+    let scrim = |rect: Rect| {
+        ui.painter().rect_filled(rect, 0.0, t.scrim);
+        if !t.dark() {
+            ui.painter().rect_filled(rect, 0.0, t.scrim);
+        }
+    };
     let name_h = (rect.height() * 0.20).clamp(16.0, 22.0);
     let name_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + name_h));
-    ui.painter().rect_filled(name_rect, 0.0, t.scrim);
+    scrim(name_rect);
     let name_size = if rect.width() >= 72.0 { 10.5 } else { 9.0 };
     let galley = crate::tab_strip::elided(ui, &item.name, FontId::proportional(name_size), card_text, rect.width() - 10.0);
     ui.painter().galley(pos2(name_rect.center().x - galley.size().x / 2.0, name_rect.center().y - galley.size().y / 2.0), galley, card_text);
     let strip_h = (rect.height() * 0.26).clamp(16.0, 22.0);
     let strip = Rect::from_min_max(pos2(rect.left(), rect.bottom() - strip_h), rect.max);
-    ui.painter().rect_filled(strip, 0.0, t.scrim);
+    scrim(strip);
     let label =
         if item.layer_count == 1 { tl!(text::ONE_LAYER).to_string() } else { crate::i18n::fmt(tl!(text::LAYERS), &[("n", &item.layer_count.to_string())]) };
     let count_size = if rect.width() >= 72.0 { 10.0 } else { 9.0 };
@@ -1318,7 +1326,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             if !has_document {
                 widgets::soft_card(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE)).size(12.0).color(t.warning)).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE)).size(12.0).color(t.text_dim)).wrap());
                 });
                 ui.add_space(6.0);
             }
@@ -1369,6 +1377,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 });
                 ui.add_space(10.0);
             });
+            if body.content_size.y > body.inner_rect.height() + 0.5 && body.state.offset.y + body.inner_rect.height() < body.content_size.y - 1.0 {
+                widgets::scroll_fade_bottom(ui, body.inner_rect);
+            }
             // What the tests measure: the body's viewport and the height of all its content.
             #[cfg(test)]
             ui.ctx().data_mut(|d| d.insert_temp(panel_id().with("body"), (body.inner_rect, body.content_size)));

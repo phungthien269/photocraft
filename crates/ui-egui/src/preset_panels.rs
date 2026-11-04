@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::PhotocraftApp;
 use crate::state::Tool;
 use crate::theme::Tokens;
+use crate::widgets;
 
 /// Panel state (serde, so the control channel can read and drive it).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -404,7 +405,16 @@ pub(crate) fn browser(
     // and scrolls, rather than pushing the footer out of a short dock group (#4790).
     let footer_id = egui::Id::new(("preset-footer", panel));
     let footer_h = ui.data(|d| d.get_temp::<f32>(footer_id)).unwrap_or(FOOTER_GUESS);
-    let max_h = max_h.min((ui.available_height() - footer_h).max(0.0));
+    let available = ui.available_height();
+    let cap = (available - footer_h).max(0.0);
+    let max_h = max_h.min(cap);
+    // Round the viewport up to the next whole card row when the space allows it: at 125% UI
+    // scale a half-row fold cut the layer-count strip off the last visible cards.
+    let row_h = if list { 24.0 } else { size + GRID_GAP };
+    let header_h = 22.0;
+    let rows = ((max_h - header_h).max(0.0) / row_h).ceil().max(1.0);
+    let snapped = header_h + rows * row_h;
+    let max_h = if max_h >= header_h + row_h * 0.5 && snapped <= cap { snapped } else { max_h };
     egui::ScrollArea::vertical().id_salt(("preset-scroll", panel)).max_height(max_h).min_scrolled_height(max_h.min(64.0)).auto_shrink([false, true]).show(
         ui,
         |ui| {
@@ -578,7 +588,14 @@ pub(crate) fn browser(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let mut s = size;
-        ui.add_sized(vec2(90.0, 18.0), egui::Slider::new(&mut s, MIN_THUMB..=96.0).show_value(false)).on_hover_text(tl!("Thumbnail size (smallest: list)"));
+        // Stretch the zoom slider up to the icon group: a fixed 90 points left a dead gap, most
+        // visible at 125% UI scale. `Slider` sizes itself from `spacing.slider_width`, not from
+        // `add_sized`.
+        let icons_w = 3.0 * 24.0 + 2.0 * ui.spacing().item_spacing.x;
+        let slider_w = (ui.available_width() - icons_w - ui.spacing().item_spacing.x).max(90.0);
+        widgets::style_slider(ui);
+        ui.spacing_mut().slider_width = slider_w;
+        ui.add(egui::Slider::new(&mut s, MIN_THUMB..=96.0).show_value(false)).on_hover_text(tl!("Thumbnail size (smallest: list)"));
         if (s - size).abs() > 0.01 {
             st.sizes.insert(panel.to_string(), s);
         }

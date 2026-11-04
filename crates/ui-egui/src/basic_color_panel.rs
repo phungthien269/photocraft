@@ -1066,8 +1066,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // edge, which is where the panel opens (or where the user dragged it to).
     let default_top = canvas.top() + 8.0;
     let panel_top = ctx.memory(|mem| mem.area_rect(panel_id())).map_or(default_top, |rect| rect.top());
-    // The extra point covers the frame stroke's rounding, so a short window fills to its edge.
-    let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT).max(0.0) + 1.0;
+    let room = (ctx.content_rect().bottom() - panel_top.min(default_top) - frame_margin - HEADER_HEIGHT).max(0.0);
     let body_height = (BODY_HEIGHT + BODY_HEADROOM).min(room);
     egui::Window::new(tl!(text::TITLE))
         .id(panel_id())
@@ -1114,7 +1113,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             if !has_document {
                 widgets::soft_card(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE_TO_START)).size(12.0).color(t.warning)).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE_TO_START)).size(12.0).color(t.text_dim)).wrap());
                 });
                 return;
             }
@@ -1166,6 +1165,9 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 }
                 ui.add_space(2.0);
             });
+            if body.content_size.y > body.inner_rect.height() + 0.5 && body.state.offset.y + body.inner_rect.height() < body.content_size.y - 1.0 {
+                widgets::scroll_fade_bottom(ui, body.inner_rect);
+            }
             // What the tests measure: the body's viewport and the height of all its content, so
             // they can tell a body that scrolls from one that fits without reading pixels.
             #[cfg(test)]

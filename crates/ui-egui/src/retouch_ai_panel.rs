@@ -1087,6 +1087,7 @@ fn tool_row(ui: &mut egui::Ui, state: &mut RetouchAiState, id: &str, tip: &str) 
     ui.horizontal(|ui| {
         ui.add_space(34.0);
         ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(80.0);
+        widgets::style_slider(ui);
         ui.add_enabled_ui(enabled, |ui| {
             ui.add(egui::Slider::new(&mut tool.amount, 0.0..=100.0).show_value(false).suffix("%")).on_hover_text(tip);
         });
@@ -1194,6 +1195,7 @@ fn results(ui: &mut egui::Ui, state: &mut RetouchAiState, actions: &mut Vec<Acti
         ui.horizontal(|ui| {
             ui.add_space(24.0);
             ui.spacing_mut().slider_width = (ui.available_width() - 52.0).max(80.0);
+            widgets::style_slider(ui);
             let response = ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=100.0).show_value(false).suffix("%"));
             if response.changed() {
                 actions.push(Action::SetOpacity { layer: layer.layer, opacity: layer.opacity, gesture: finger });
@@ -1259,7 +1261,10 @@ fn folder_field(ui: &mut egui::Ui, label: &str, value: &mut String, pick: Action
     ui.label(egui::RichText::new(label).size(12.0).color(t.text_dim));
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - 78.0).max(90.0);
+        // Measure the Browse button so a longer label (or a wider UI scale) cannot push it past
+        // the card's right edge.
+        let reserve = widgets::button_width(ui, &[tl!(text::BROWSE)]) + ui.spacing().item_spacing.x;
+        let width = (ui.available_width() - reserve).max(90.0);
         ui.add_sized([width, 28.0], egui::TextEdit::singleline(value).hint_text(tl!(text::FOLDER_PATH)));
         if widgets::secondary_button(ui, tl!(text::BROWSE), 0.0).clicked() {
             actions.push(pick);
@@ -1365,11 +1370,11 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             if !has_document {
                 widgets::soft_card(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE_TO_START)).size(12.0).color(t.warning)).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(tl!(text::OPEN_IMAGE_TO_START)).size(12.0).color(t.text_dim)).wrap());
                 });
                 ui.add_space(8.0);
             }
-            egui::ScrollArea::vertical().id_salt("retouch-ai-body").max_height(max_height).auto_shrink([false, false]).show(ui, |ui| {
+            let body = egui::ScrollArea::vertical().id_salt("retouch-ai-body").max_height(max_height).auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let state = &mut app.ui.retouch_ai;
 
@@ -1494,6 +1499,14 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 });
                 ui.add_space(4.0);
             });
+            // What the tests measure: the body's viewport and the height of all its content.
+            if body.content_size.y > body.inner_rect.height() + 0.5 && body.state.offset.y + body.inner_rect.height() < body.content_size.y - 1.0 {
+                widgets::scroll_fade_bottom(ui, body.inner_rect);
+            }
+            #[cfg(test)]
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("retouch-ai").with("body"), (body.inner_rect, body.content_size)));
+            #[cfg(not(test))]
+            let _ = body;
         });
     if !open {
         app.ui.panels.retouch_ai = false;
