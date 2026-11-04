@@ -2890,3 +2890,9 @@ curves	Smooth	平滑
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	面部重塑
 	Face Reshape: Apply	面部重塑：套用
+
+# Home screen quick start card.
+	Quick start	快速開始
+
+# Home screen empty Recent state.
+	Open an image to start	開啟影像以開始

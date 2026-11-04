@@ -2841,6 +2841,16 @@ const HOME_CARD_WIDTH: f32 = 460.0;
 const HOME_BUTTON_WIDTH: f32 = 190.0;
 /// Space between the Home screen's two buttons.
 const HOME_BUTTON_GAP: f32 = 12.0;
+/// The primary action takes a little more width than Open, so the first step reads first.
+const HOME_PRIMARY_EXTRA: f32 = 26.0;
+/// Height of the Home card without its recent list: hero, actions, quick start, hint and links.
+const HOME_CARD_BASE: f32 = 406.0;
+/// Width of the quick-start card inside the Home card.
+const HOME_QUICK_WIDTH: f32 = 408.0;
+/// Height of one quick-start row.
+const HOME_QUICK_ROW: f32 = 26.0;
+/// Height of the guidance card shown while Recent is empty.
+const HOME_EMPTY_RECENT_H: f32 = 96.0;
 
 fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get(ui.ctx());
@@ -2851,42 +2861,38 @@ fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let show_recent = app.session.prefs().interface.show_home_recent_files;
     let recent: Vec<String> =
         if cfg!(target_arch = "wasm32") || !show_recent { Vec::new() } else { app.ui.recent_files.iter().take(HOME_RECENT).cloned().collect() };
-    let recent_h = if recent.is_empty() { 0.0 } else { 34.0 + recent.len() as f32 * HOME_RECENT_ROW };
+    let recent_h = if recent.is_empty() { HOME_EMPTY_RECENT_H } else { 34.0 + recent.len() as f32 * HOME_RECENT_ROW };
     // A tiling window manager can give the canvas less room than the card wants: shrink the card
     // to fit, and stack the buttons when they don't fit side by side.
     let new_label = crate::shortcuts::command_label(app, "New document…", "file.new");
     let open_label = crate::shortcuts::command_label(app, "Open…", "file.open");
+    let quick = quick_start_rows(app);
     let card_width = HOME_CARD_WIDTH.min(area.width());
     let button_width = HOME_BUTTON_WIDTH.max(crate::widgets::button_width(ui, &[&new_label, &open_label]));
-    let side_by_side = 2.0 * button_width + HOME_BUTTON_GAP <= card_width;
+    let primary_width = button_width + HOME_PRIMARY_EXTRA;
+    let side_by_side = primary_width + HOME_BUTTON_GAP + button_width <= card_width;
     // Stacked buttons take one more row.
     let stacked_h = if side_by_side { 0.0 } else { 44.0 };
-    let card = Rect::from_center_size(area.center(), egui::vec2(card_width, 330.0 + recent_h + stacked_h));
+    let card = Rect::from_center_size(area.center(), egui::vec2(card_width, HOME_CARD_BASE + recent_h + stacked_h));
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| d.insert_temp(home_card_id(), card));
+    let quick_width = (card_width - 32.0).clamp(240.0, HOME_QUICK_WIDTH);
+    let recent_width = (card_width - 32.0).clamp(240.0, 380.0);
+    let mut quick_clicked = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
         ui.vertical_centered(|ui| {
-            ui.horizontal(|ui| {
-                let title = ui.painter().layout_no_wrap(tl!("PhotoCraft").into(), crate::theme::semibold(38.0), t.text);
-                let by = ui.painter().layout_no_wrap(tl!("open source").into(), egui::FontId::proportional(13.0), t.text_faint);
-                let total = title.size().x + by.size().x + 10.0;
-                ui.add_space(((card.width() - total) / 2.0).max(0.0));
-                let (r, _) = ui.allocate_exact_size(title.size(), Sense::hover());
-                ui.painter().galley(r.min, title, t.text);
-                let (r2, _) = ui.allocate_exact_size(egui::vec2(by.size().x + 10.0, r.height()), Sense::hover());
-                ui.painter().galley(egui::pos2(r2.left() + 10.0, r.bottom() - by.size().y - 8.0), by, t.text_faint);
-            });
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(tl!("Create a new document or open an existing file.")).color(t.text_dim).size(14.0));
-            ui.add_space(22.0);
+            home_lockup(ui, card.width());
+            ui.add_space(16.0);
             let (mut new_clicked, mut open_clicked) = (false, false);
             if side_by_side {
                 ui.horizontal(|ui| {
-                    ui.add_space(((card.width() - 2.0 * button_width - HOME_BUTTON_GAP) / 2.0).max(0.0));
+                    ui.add_space(((card.width() - primary_width - button_width - HOME_BUTTON_GAP) / 2.0).max(0.0));
                     ui.spacing_mut().item_spacing.x = HOME_BUTTON_GAP;
-                    new_clicked = crate::widgets::primary_button(ui, &new_label, button_width).clicked();
+                    new_clicked = crate::widgets::primary_button(ui, &new_label, primary_width).clicked();
                     open_clicked = crate::widgets::secondary_button(ui, &open_label, button_width).clicked();
                 });
             } else {
-                new_clicked = crate::widgets::primary_button(ui, &new_label, button_width).clicked();
+                new_clicked = crate::widgets::primary_button(ui, &new_label, primary_width).clicked();
                 ui.add_space(HOME_BUTTON_GAP);
                 open_clicked = crate::widgets::secondary_button(ui, &open_label, button_width).clicked();
             }
@@ -2897,7 +2903,9 @@ fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if open_clicked {
                 let _ = app.open_dialog_file();
             }
-            ui.add_space(22.0);
+            ui.add_space(12.0);
+            quick_clicked = home_quick_start(ui, quick_width, &quick);
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let msg = start_screen_drop_hint(app);
                 let g = ui.painter().layout_no_wrap(msg.to_string(), egui::FontId::proportional(12.5), t.text_faint);
@@ -2906,16 +2914,147 @@ fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 crate::icons::paint(ui, r, "image", 15.0, t.text_faint);
                 ui.label(egui::RichText::new(msg).color(t.text_faint));
             });
-            if !recent.is_empty() {
-                ui.add_space(22.0);
-                home_recent(app, ui, &recent);
+            ui.add_space(14.0);
+            if recent.is_empty() {
+                home_empty_recent(ui, recent_width);
+            } else {
+                home_recent(app, ui, &recent, recent_width);
             }
-            ui.add_space(26.0);
+            ui.add_space(18.0);
             crate::links::discord_button(app, ui, 190.0);
-            ui.add_space(10.0);
+            ui.add_space(8.0);
             crate::links::link_row(app, ui);
         });
     });
+    match quick_clicked {
+        Some(0) => {
+            let _ = app.open_dialog_file();
+        }
+        Some(1) => {
+            // The panel's command is a toggle; from Home it should only ever bring it forward.
+            if !app.ui.panels.retouch_ai {
+                let _ = crate::menus::invoke(app, ui.ctx(), "window.toggle.retouchAI", json!({}));
+            }
+        }
+        Some(_) => {
+            let _ = crate::menus::invoke(app, ui.ctx(), "edit.keyboardShortcuts", json!({}));
+        }
+        None => {}
+    }
+}
+
+/// The Home hero: the kitsune mark, the PhotoCraft wordmark, the open-source chip and the short
+/// product line. Text uses theme tokens; the chip is the one exact brand colour, in small doses.
+fn home_lockup(ui: &mut egui::Ui, card_width: f32) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let b = t.brand();
+    const MARK: f32 = 48.0;
+    let text_w = (card_width - MARK - 12.0 - 16.0).max(120.0);
+    let title = ui.painter().layout_no_wrap(tl!("PhotoCraft").into(), crate::theme::semibold(30.0), t.text);
+    let pill = ui.painter().layout_no_wrap(tl!("open source").into(), crate::theme::medium(10.0), b.ink);
+    let pill_size = pill.size() + egui::vec2(12.0, 6.0);
+    let row_w = title.size().x + 8.0 + pill_size.x;
+    let group_w = (MARK + 12.0 + row_w.max(text_w)).min(card_width - 16.0);
+    ui.horizontal(|ui| {
+        ui.add_space(((card_width - group_w) / 2.0).max(0.0));
+        let (r, _) = ui.allocate_exact_size(egui::vec2(MARK, MARK), Sense::hover());
+        crate::brand::paint_mark(ui, r);
+        ui.add_space(12.0);
+        ui.vertical(|ui| {
+            ui.set_max_width(text_w);
+            ui.horizontal(|ui| {
+                let (tr, title_resp) = ui.allocate_exact_size(title.size(), Sense::hover());
+                title_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "PhotoCraft"));
+                ui.painter().galley(tr.min, title, t.text);
+                ui.add_space(8.0);
+                let (pr, pill_resp) = ui.allocate_exact_size(pill_size, Sense::hover());
+                pill_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tl!("open source")));
+                ui.painter().rect_filled(pr, pr.height() / 2.0, b.blue);
+                ui.painter().galley(pr.center() - pill.size() / 2.0, pill, b.ink);
+            });
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(egui::RichText::new(tl!("PhotoCraft — an open-source, native image editor written in Rust.")).size(11.5).color(t.text_dim))
+                    .truncate(),
+            );
+        });
+    });
+}
+
+/// The three existing first actions, with their effective shortcuts. Opening Retouch AI only
+/// shows the existing panel; the shortcuts row opens the existing dialog.
+fn quick_start_rows(app: &PhotocraftApp) -> [(&'static str, &'static str, Option<String>); 3] {
+    [
+        ("image", tl!("Open…"), crate::shortcuts::shortcut_label(app, "file.open")),
+        ("sparkles", tl!("Retouch AI"), crate::shortcuts::shortcut_label(app, "window.toggle.retouchAI")),
+        ("grid-2x2", tl!("Keyboard Shortcuts…"), crate::shortcuts::shortcut_label(app, "edit.keyboardShortcuts")),
+    ]
+}
+
+/// A compact "Quick start" card: three rows, each an existing action with its effective shortcut.
+fn home_quick_start(ui: &mut egui::Ui, width: f32, rows: &[(&str, &str, Option<String>)]) -> Option<usize> {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let b = t.brand();
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            crate::widgets::soft_card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new(tl!("Quick start")).font(crate::theme::semibold(12.5)).color(t.text));
+                ui.add_space(4.0);
+                for (i, (icon, label, shortcut)) in rows.iter().enumerate() {
+                    let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), HOME_QUICK_ROW), Sense::click());
+                    let hovered = ui.rect_contains_pointer(row);
+                    if hovered {
+                        ui.painter().rect_filled(row, t.radius_sm, t.hover);
+                    }
+                    let icon_rect = Rect::from_center_size(egui::pos2(row.left() + 14.0, row.center().y), egui::vec2(16.0, 16.0));
+                    ui.painter().circle_filled(icon_rect.center(), 11.0, b.soft);
+                    crate::icons::paint(ui, icon_rect, icon, 12.0, b.accent);
+                    let shortcut_w = shortcut.as_ref().map_or(0.0, |s| ui.painter().layout_no_wrap(s.clone(), crate::theme::mono(10.0), t.text_dim).size().x);
+                    let label_x = row.left() + 30.0;
+                    let label_max = (row.right() - 10.0 - shortcut_w - if shortcut_w > 0.0 { 12.0 } else { 0.0 } - label_x).max(20.0);
+                    let galley = crate::tab_strip::elided(ui, label, egui::FontId::proportional(12.0), t.text, label_max);
+                    ui.painter().galley(egui::pos2(label_x, row.center().y - galley.size().y / 2.0), galley, t.text);
+                    if let Some(sc) = shortcut {
+                        let sg = ui.painter().layout_no_wrap(sc.clone(), crate::theme::mono(10.0), t.text_dim);
+                        ui.painter().galley(egui::pos2(row.right() - 10.0 - sg.size().x, row.center().y - sg.size().y / 2.0), sg, t.text_dim);
+                    }
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *label));
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        clicked = Some(i);
+                    }
+                    if i + 1 < rows.len() {
+                        ui.add_space(2.0);
+                    }
+                }
+            });
+        });
+    });
+    clicked
+}
+
+/// Guidance in place of an empty Recent list, so the Home screen never reads as a dead end.
+fn home_empty_recent(ui: &mut egui::Ui, width: f32) {
+    ui.horizontal(|ui| {
+        ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            crate::widgets::empty_state(ui, "clock", tl!("Recent"), tl!("Open an image to start"));
+        });
+    });
+}
+
+#[cfg(test)]
+fn home_card_id() -> egui::Id {
+    egui::Id::new("photocraft-home-card")
+}
+
+#[cfg(test)]
+pub(crate) fn home_card_rect(ctx: &egui::Context) -> Option<Rect> {
+    ctx.data(|d| d.get_temp(home_card_id()))
 }
 
 /// Wayland has no native file drops (winit 0.30, #386), so the hint offers File › Open and paste.
@@ -2935,9 +3074,8 @@ const HOME_RECENT_ROW: f32 = 30.0;
 /// The Home screen's "Recent" list: file name, its folder on the right, click to open. The
 /// hovered row shows a × that takes it off the list, and right-click offers Remove from Recent
 /// and Clear Recent Files (#2691).
-fn home_recent(app: &mut PhotocraftApp, ui: &mut egui::Ui, recent: &[String]) {
+fn home_recent(app: &mut PhotocraftApp, ui: &mut egui::Ui, recent: &[String], width: f32) {
     let t = crate::theme::Tokens::get(ui.ctx());
-    let width = 380.0;
     ui.horizontal(|ui| {
         // Line the heading up with the file icons.
         ui.add_space(((ui.available_width() - width) / 2.0).max(0.0) + 8.0);

@@ -552,9 +552,30 @@ fn about_tab_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, tab: &str) {
         "contributors" => crate::credits::contributors_ui(app, ui),
         "models" => crate::credits::models_ui(ui),
         _ => {
-            ui.label(tl!("PhotoCraft — an open-source, native image editor written in Rust."));
-            ui.label(crate::i18n::fmt(tl!("Version {version}"), &[("version", &photocraft_engine::build_info::long_version())]));
-            ui.add_space(12.0);
+            let t = crate::theme::Tokens::get(ui.ctx());
+            let b = t.brand();
+            ui.vertical_centered(|ui| {
+                let (mark, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+                crate::brand::paint_mark(ui, mark);
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("PhotoCraft").font(crate::theme::semibold(26.0)).color(t.text));
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(tl!("PhotoCraft — an open-source, native image editor written in Rust.")).size(12.5).color(t.text_dim),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(12.0);
+                palette_chips(ui, &t, &b);
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(crate::i18n::fmt(tl!("Version {version}"), &[("version", &photocraft_engine::build_info::long_version())]))
+                        .size(12.0)
+                        .color(t.text_dim),
+                );
+            });
+            ui.add_space(16.0);
             ui.vertical_centered(|ui| {
                 crate::links::discord_button(app, ui, 220.0);
                 ui.add_space(8.0);
@@ -564,6 +585,30 @@ fn about_tab_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, tab: &str) {
             ui.weak("egui · wgpu · photocraft-engine");
         }
     }
+}
+
+/// The three fixed brand chips with their hex values: Ink, Paper and PhotoCraft blue. The chips
+/// keep the exact palette; the hex labels use the theme's brand accent, which carries AA contrast
+/// on every theme's surfaces.
+fn palette_chips(ui: &mut egui::Ui, t: &crate::theme::Tokens, b: &crate::theme::BrandTokens) {
+    const CHIP: f32 = 24.0;
+    const COLUMN: f32 = 88.0;
+    const GAP: f32 = 14.0;
+    let chips = [("#0B0B0C", b.ink), ("#EFE9DC", b.paper), ("#2F7BF5", b.blue)];
+    ui.horizontal(|ui| {
+        let total = COLUMN * chips.len() as f32 + GAP * (chips.len() as f32 - 1.0);
+        ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+        ui.spacing_mut().item_spacing.x = GAP;
+        for (hex, colour) in chips {
+            ui.allocate_ui_with_layout(egui::vec2(COLUMN, CHIP + 18.0), egui::Layout::top_down(egui::Align::Center), |ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(CHIP, CHIP), egui::Sense::hover());
+                ui.painter().rect_filled(r, egui::CornerRadius::same(t.radius_sm as u8), colour);
+                ui.painter().rect_stroke(r, egui::CornerRadius::same(t.radius_sm as u8), egui::Stroke::new(1.0, t.card_border), egui::StrokeKind::Inside);
+                ui.add_space(3.0);
+                ui.label(egui::RichText::new(hex).font(crate::theme::mono(10.0)).color(b.accent));
+            });
+        }
+    });
 }
 
 /// The dialog title as shown: [`title`] in the UI language.

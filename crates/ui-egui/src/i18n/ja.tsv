@@ -3958,3 +3958,9 @@ curves	Smooth	スムーズ
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	顔のリシェイプ
 	Face Reshape: Apply	顔のリシェイプ: 適用
+
+# Home screen quick start card.
+	Quick start	クイックスタート
+
+# Home screen empty Recent state.
+	Open an image to start	画像を開いて開始

@@ -4398,3 +4398,9 @@ shape	Appearance	Aspetto
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Rimodella viso
 	Face Reshape: Apply	Rimodella viso: Applica
+
+# Home screen quick start card.
+	Quick start	Avvio rapido
+
+# Home screen empty Recent state.
+	Open an image to start	Apri un'immagine per iniziare

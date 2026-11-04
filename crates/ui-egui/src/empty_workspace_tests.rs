@@ -77,8 +77,8 @@ fn double_clicking_the_empty_workspace_shows_file_open() {
 #[test]
 fn the_home_screens_own_widgets_keep_their_double_clicks() {
     let (mut h, requests) = harness(true);
-    // The subtitle is selectable text: a double-click there selects a word, not File › Open.
-    let at = h.get_by_label_contains("Create a new document or open an existing file").rect().center();
+    // The tagline is selectable text: a double-click there selects a word, not File › Open.
+    let at = h.get_by_label_contains("open-source, native image editor").rect().center();
     clicks(&mut h, at, 2);
     assert_eq!(opens(&requests), 0, "the label took the double-click");
     // The New document button opens the New Document dialog, not File › Open.

@@ -4041,3 +4041,9 @@ curves	Smooth	Vloeiend maken
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Gezichtsvorm
 	Face Reshape: Apply	Gezichtsvorm: Toepassen
+
+# Home screen quick start card.
+	Quick start	Snel starten
+
+# Home screen empty Recent state.
+	Open an image to start	Open een afbeelding om te beginnen

@@ -3289,3 +3289,9 @@ curves	Smooth	Lisser
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Remodelage du visage
 	Face Reshape: Apply	Remodelage du visage : Appliquer
+
+# Home screen quick start card.
+	Quick start	Démarrage rapide
+
+# Home screen empty Recent state.
+	Open an image to start	Ouvrez une image pour commencer

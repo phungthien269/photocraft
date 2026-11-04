@@ -4071,3 +4071,9 @@ layerLabel	No Color	Sem cor
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Remodelar Rosto
 	Face Reshape: Apply	Remodelar Rosto: Aplicar
+
+# Home screen quick start card.
+	Quick start	Início rápido
+
+# Home screen empty Recent state.
+	Open an image to start	Abra uma imagem para começar

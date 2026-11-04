@@ -3282,3 +3282,9 @@ curves	Smooth	Glätten
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Gesichtsform
 	Face Reshape: Apply	Gesichtsform: Anwenden
+
+# Home screen quick start card.
+	Quick start	Schnellstart
+
+# Home screen empty Recent state.
+	Open an image to start	Ein Bild öffnen, um zu beginnen

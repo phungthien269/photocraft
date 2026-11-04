@@ -138,6 +138,29 @@ impl ThemeKind {
     }
 }
 
+/// The PhotoCraft brand palette, exactly as `assets/app-icon/README.md` documents it: Ink for
+/// line work, Paper for the figure, and the app's blue field. These three never change with the
+/// theme; the theme-aware [`BrandTokens`] beside them carries the readable derivations.
+pub const BRAND_INK: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0c);
+pub const BRAND_PAPER: Color32 = Color32::from_rgb(0xef, 0xe9, 0xdc);
+pub const BRAND_BLUE: Color32 = Color32::from_rgb(0x2f, 0x7b, 0xf5);
+
+/// The brand palette a theme can use: the fixed three colours for the lockup and palette chips,
+/// plus blues derived from the theme's brightness so they stay readable on its surfaces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrandTokens {
+    pub ink: Color32,
+    pub paper: Color32,
+    /// The exact PhotoCraft blue (`#2f7bf5`): fills the "open source" chip and palette swatch.
+    pub blue: Color32,
+    /// PhotoCraft blue tuned to read as text and icons on this theme (WCAG AA on every surface).
+    pub accent: Color32,
+    /// A quiet blue wash behind brand icons.
+    pub soft: Color32,
+    /// A very low-alpha tint for the mark watermark in empty states.
+    pub watermark: Color32,
+}
+
 /// Colour and shape tokens.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
@@ -200,6 +223,22 @@ impl Tokens {
     /// Tool outlines need contrast on arbitrary document pixels, independently of UI theme.
     pub(crate) fn cursor_outline() -> [Color32; 2] {
         [Color32::from_black_alpha(160), Color32::from_white_alpha(235)]
+    }
+
+    /// The brand lockup and watermark colours for this theme. The exact palette stays fixed; the
+    /// accent is lightened on dark surfaces and deepened on light ones so it carries icons and
+    /// short text at AA contrast in every theme.
+    pub fn brand(&self) -> BrandTokens {
+        let accent = if self.dark() { Color32::from_rgb(0xb3, 0xcc, 0xff) } else { Color32::from_rgb(0x06, 0x33, 0x6f) };
+        let soft_alpha = if self.dark() { 40 } else { 32 };
+        BrandTokens {
+            ink: BRAND_INK,
+            paper: BRAND_PAPER,
+            blue: BRAND_BLUE,
+            accent,
+            soft: Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), soft_alpha),
+            watermark: if self.dark() { Color32::from_rgba_unmultiplied(0xef, 0xe9, 0xdc, 18) } else { Color32::from_rgba_unmultiplied(0x0b, 0x0b, 0x0c, 22) },
+        }
     }
 
     pub fn for_kind(kind: ThemeKind) -> Self {

@@ -4011,3 +4011,9 @@ cameraData	Lens	Lens
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Yüz Şekillendirme
 	Face Reshape: Apply	Yüz Şekillendirme: Uygula
+
+# Home screen quick start card.
+	Quick start	Hızlı başlangıç
+
+# Home screen empty Recent state.
+	Open an image to start	Başlamak için bir görsel açın

@@ -3989,3 +3989,9 @@ curves	Smooth	Згладити
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Зміна форми обличчя
 	Face Reshape: Apply	Зміна форми обличчя: Застосувати
+
+# Home screen quick start card.
+	Quick start	Швидкий старт
+
+# Home screen empty Recent state.
+	Open an image to start	Відкрийте зображення, щоб почати

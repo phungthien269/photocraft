@@ -401,6 +401,17 @@ pub fn empty_state(ui: &mut Ui, icon: &str, title: &str, hint: &str) {
         ui,
         |ui| {
             ui.set_width(ui.available_width());
+            // A very light mark in the card's top-right corner, painted before the content so it
+            // stays a background watermark. Narrow panels skip it rather than crowd their text.
+            let card = ui.max_rect();
+            let size = 40.0_f32.min(card.width() * 0.18);
+            // At the top of a sizing pass the frame's inner rect can still be zero-height (the
+            // Home card's empty state is laid out this way), so only the width gates the mark; a
+            // real empty state is always taller than the 40 pt watermark.
+            if card.width() >= 230.0 && size > 0.0 {
+                let mark = Rect::from_min_size(pos2(card.right() - size - 8.0, card.top() + 4.0), Vec2::splat(size));
+                crate::brand::paint_watermark(ui, mark, t.brand().watermark);
+            }
             ui.vertical_centered(|ui| {
                 let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
                 ui.painter().circle_filled(icon_rect.center(), 15.0, t.accent_soft);

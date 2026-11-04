@@ -3276,3 +3276,9 @@ curves	Smooth	Haluskan
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Bentuk Ulang Wajah
 	Face Reshape: Apply	Bentuk Ulang Wajah: Terapkan
+
+# Home screen quick start card.
+	Quick start	Mulai cepat
+
+# Home screen empty Recent state.
+	Open an image to start	Buka gambar untuk memulai

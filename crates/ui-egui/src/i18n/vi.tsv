@@ -3938,3 +3938,6 @@ curves	Smooth	Làm mượt
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Định hình khuôn mặt
 	Face Reshape: Apply	Định hình khuôn mặt: Áp dụng
+
+# Home screen quick start card.
+	Quick start	Bắt đầu nhanh

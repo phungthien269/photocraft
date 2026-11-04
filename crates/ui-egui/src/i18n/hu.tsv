@@ -4200,3 +4200,9 @@ cameraRaw	Yellow	Sárga
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Arcformálás
 	Face Reshape: Apply	Arcformálás: Alkalmaz
+
+# Home screen quick start card.
+	Quick start	Gyorsindítás
+
+# Home screen empty Recent state.
+	Open an image to start	Nyisson meg egy képet a kezdéshez

@@ -3981,3 +3981,9 @@ curves	Smooth	Εξομάλυνση
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Αναδιαμόρφωση προσώπου
 	Face Reshape: Apply	Αναδιαμόρφωση προσώπου: Εφαρμογή
+
+# Home screen quick start card.
+	Quick start	Γρήγορη εκκίνηση
+
+# Home screen empty Recent state.
+	Open an image to start	Ανοίξτε μια εικόνα για να ξεκινήσετε

@@ -2825,6 +2825,9 @@ mod panel_visual_qa_tests;
 mod dock_visual_qa_tests;
 
 #[cfg(test)]
+mod brand_ui_tests;
+
+#[cfg(test)]
 mod blur_pins_tests;
 
 #[cfg(test)]

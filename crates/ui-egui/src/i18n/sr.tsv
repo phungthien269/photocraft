@@ -4354,3 +4354,9 @@ shape	Appearance	Izgled
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Preoblikovanje lica
 	Face Reshape: Apply	Preoblikovanje lica: Primeni
+
+# Home screen quick start card.
+	Quick start	Brzi početak
+
+# Home screen empty Recent state.
+	Open an image to start	Otvorite sliku da biste počeli

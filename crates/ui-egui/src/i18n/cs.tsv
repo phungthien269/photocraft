@@ -3889,3 +3889,9 @@ navigator	Zoom	Zvětšení
 # Face Reshape panel actions (Window menu and its shortcut)
 	Face Reshape	Přetvarování obličeje
 	Face Reshape: Apply	Přetvarování obličeje: Použít
+
+# Home screen quick start card.
+	Quick start	Rychlý start
+
+# Home screen empty Recent state.
+	Open an image to start	Otevřete obrázek a začněte
