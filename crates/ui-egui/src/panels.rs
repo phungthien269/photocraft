@@ -1833,7 +1833,7 @@ pub(crate) fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate
 fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
-        empty(ui, tl!("No document"));
+        no_document(ui, "info");
         return;
     };
     let (rev, size, origin) = (st.revision, st.doc.size, st.doc.ruler_origin);
@@ -1957,7 +1957,7 @@ pub(crate) fn sampler_readouts(app: &mut PhotocraftApp) -> std::sync::Arc<Vec<Va
 fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(idx) = app.session.active_index() else {
-        empty(ui, tl!("No document"));
+        no_document(ui, "navigation");
         return;
     };
     let ctx = ui.ctx().clone();
@@ -1970,6 +1970,7 @@ fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let box_h = if left.is_finite() { left.max(40.0) } else { 150.0 };
     let (frame, resp) = ui.allocate_exact_size(vec2(avail, box_h), Sense::click_and_drag());
     ui.painter().rect_filled(frame, t.radius_sm, t.canvas);
+    ui.painter().rect_stroke(frame, t.radius_sm, Stroke::new(1.0, t.card_border), StrokeKind::Inside);
     let rect = navigator_fit(frame, size.width, size.height);
     ui.data_mut(|d| d.insert_temp(navigator_preview_id(), rect));
     // On the GPU canvas, its own texture at this size (#4518); otherwise the CPU thumbnail.
@@ -2320,19 +2321,31 @@ mod navigator_wheel_tests {
     }
 }
 
-fn empty(ui: &mut egui::Ui, s: &str) {
-    let t = Tokens::get(ui.ctx());
+/// A dock panel with nothing to show: the shared soft empty card names the panel and points at the
+/// two ways to get a document.
+pub(crate) fn no_document(ui: &mut egui::Ui, icon: &str) {
     ui.add_space(6.0);
-    ui.label(RichText::new(s).color(t.text_faint));
+    widgets::empty_state(ui, icon, tl!("No document"), &format!("{} · {}", tl!("New Document"), tl!("Open…")));
     ui.add_space(6.0);
 }
 
 /// The Color tab of the themes other than Photoshop's: the same spectrum field (chips, saturation
 /// and brightness field, hue strip and readout) with HSB sliders under it (#4367).
 fn color_picker(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
     color_field(app, ui);
     ui.add_space(8.0);
-    hsb_sliders(app, ui);
+    // The non-Photoshop themes put the numeric HSB controls on their own soft card under the
+    // field, so the panel reads as one block instead of loose sliders. Pro keeps Photoshop's
+    // flat sliders.
+    if t.pro {
+        hsb_sliders(app, ui);
+    } else {
+        widgets::soft_card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            hsb_sliders(app, ui);
+        });
+    }
 }
 
 /// Hue, Saturation and Brightness sliders for the foreground colour.
@@ -2432,7 +2445,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // A new active layer opens its parent groups and is scrolled into view (#152).
     let reveal = crate::layer_reveal::track(app, ui.ctx());
     let Some(st) = app.session.active() else {
-        empty(ui, tl!("No document"));
+        no_document(ui, "layers");
         return;
     };
     let doc = st.doc.clone();
@@ -2448,110 +2461,121 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
     }
     if let Some(l) = active_layer {
-        // With several layers selected, blend mode, Opacity, Fill and the locks change every one
-        // of them, as in Photoshop; the controls show the active layer's values.
-        // The Background stays out of a several-layer change until Photoshop's behaviour is
-        // confirmed (#5856): Opacity, Fill or a blend mode would turn it into Layer 0.
-        let ids: Vec<LayerId> = if selection.len() > 1 && selection.contains(&l.id) {
-            selection.iter().copied().filter(|id| *id == l.id || !doc.layer(*id).is_some_and(|x| crate::doc_props_ui::is_background(&doc, x))).collect()
-        } else {
-            vec![l.id]
-        };
-        let targets = if ids.len() > 1 { json!({"layers": ids.iter().map(|id| id.0).collect::<Vec<_>>()}) } else { json!({"layer": l.id.0}) };
-        // Photoshop greys blend mode, Opacity and Fill for the Background layer. (With the
-        // Background among several selected, what Photoshop does awaits a check: #5856.)
-        let bg = crate::doc_props_ui::is_background(&doc, l);
-        // Pass Through is a group's mode: offered only when every target is a group.
-        let all_groups = ids.iter().all(|id| doc.layer(*id).is_some_and(|x| x.is_group()));
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(!bg, |ui| {
-                let mut m = l.blend;
-                // Reserve space for the numeric field first. On a narrow dock, hide the
-                // redundant visible Opacity label rather than force the dropdown beyond
-                // the panel's right edge (#2309). The numeric field keeps its name.
-                let opacity_label = if t.pro { tl!("Opacity:") } else { tl!("Opacity") };
-                let (blend_width, show_opacity_label) =
-                    opacity_row_layout(ui.available_width(), body_text_width(ui, opacity_label), ui.spacing().item_spacing.x);
-                let (chosen, hovered) = widgets::dropdown_wheel_hovered(ui, "blend", &mut m, &blend_options(all_groups, l.blend), blend_width);
-                // One step per choice: a click, an arrow key or each wheel notch (#1747).
-                for m in &chosen {
-                    let mut p = targets.clone();
-                    p["blend"] = json!(m.label());
-                    actions.push(("layer.setProps".into(), p));
-                }
-                // Hovering a mode previews it on the canvas (#970).
-                crate::blend_preview::hover(app, &ids, hovered.filter(|_| chosen.is_empty()));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut o = l.opacity * 100.0;
-                    let field = widgets::popup_value_field(ui, opacity_label, &mut o, 0.0..=100.0, "%", LAYER_PCT_W);
-                    // On a narrow dock the (scrubby) label yields its room to the controls (#2309).
-                    let scrub = if show_opacity_label {
-                        scrub_pct_label(ui, opacity_label, &mut o, ui.available_width())
-                    } else {
-                        widgets::PopupFieldResponse::default()
-                    };
-                    if field.changed || scrub.changed {
-                        actions.push(pct_action(&targets, "opacity", o, scrub.drag.or(field.drag)));
+        let mut layer_controls = |ui: &mut egui::Ui| {
+            // With several layers selected, blend mode, Opacity, Fill and the locks change every one
+            // of them, as in Photoshop; the controls show the active layer's values.
+            // The Background stays out of a several-layer change until Photoshop's behaviour is
+            // confirmed (#5856): Opacity, Fill or a blend mode would turn it into Layer 0.
+            let ids: Vec<LayerId> = if selection.len() > 1 && selection.contains(&l.id) {
+                selection.iter().copied().filter(|id| *id == l.id || !doc.layer(*id).is_some_and(|x| crate::doc_props_ui::is_background(&doc, x))).collect()
+            } else {
+                vec![l.id]
+            };
+            let targets = if ids.len() > 1 { json!({"layers": ids.iter().map(|id| id.0).collect::<Vec<_>>()}) } else { json!({"layer": l.id.0}) };
+            // Photoshop greys blend mode, Opacity and Fill for the Background layer. (With the
+            // Background among several selected, what Photoshop does awaits a check: #5856.)
+            let bg = crate::doc_props_ui::is_background(&doc, l);
+            // Pass Through is a group's mode: offered only when every target is a group.
+            let all_groups = ids.iter().all(|id| doc.layer(*id).is_some_and(|x| x.is_group()));
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!bg, |ui| {
+                    let mut m = l.blend;
+                    // Reserve space for the numeric field first. On a narrow dock, hide the
+                    // redundant visible Opacity label rather than force the dropdown beyond
+                    // the panel's right edge (#2309). The numeric field keeps its name.
+                    let opacity_label = if t.pro { tl!("Opacity:") } else { tl!("Opacity") };
+                    let (blend_width, show_opacity_label) =
+                        opacity_row_layout(ui.available_width(), body_text_width(ui, opacity_label), ui.spacing().item_spacing.x);
+                    let (chosen, hovered) = widgets::dropdown_wheel_hovered(ui, "blend", &mut m, &blend_options(all_groups, l.blend), blend_width);
+                    // One step per choice: a click, an arrow key or each wheel notch (#1747).
+                    for m in &chosen {
+                        let mut p = targets.clone();
+                        p["blend"] = json!(m.label());
+                        actions.push(("layer.setProps".into(), p));
                     }
-                });
-            });
-        });
-        // Docks zero the item spacing: keep the Opacity and Fill fields apart (#155).
-        ui.add_space((theme::ROW_GAP - ui.spacing().item_spacing.y).max(0.0));
-        ui.horizontal(|ui| {
-            let lock_label = if t.pro { tl!("Lock:") } else { tl!("Lock") };
-            // Layer fill opacity (≠ Edit › Fill / path fill → Tô).
-            let lang = crate::i18n::current();
-            let fill_label = if t.pro { crate::i18n::tr_ctx(lang, "layers", "Fill:") } else { crate::i18n::tr_ctx(lang, "layers", "Fill") };
-            // In a narrow panel with long translated labels, drop the "Lock:" text (the icons keep
-            // their tooltips) rather than let the Fill label run over the lock icons.
-            let gap = ui.spacing().item_spacing.x;
-            let icons_w = if t.pro { 5.0 * 20.0 + gap } else { 22.0 + gap };
-            let fits = body_text_width(ui, lock_label) + icons_w + body_text_width(ui, fill_label) + LAYER_PCT_W + 2.0 * gap <= ui.available_width();
-            if fits {
-                label(ui, lock_label);
-            }
-            if t.pro {
-                // The lock icons touch, but only they: the Fill label keeps the same gap before its
-                // field as Opacity's, so both stack in one right-aligned column (#2085).
-                ui.scope(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    let lk = l.locks;
-                    for (key, icon, tip, on) in [
-                        ("transparency", "grid-3x3", tl!("Lock transparent pixels"), lk.transparency),
-                        ("pixels", "brush", tl!("Lock image pixels"), lk.pixels),
-                        ("position", "move", tl!("Lock position"), lk.position),
-                        ("artboard", "scan", tl!("Prevent auto-nesting in and out of Artboards and Frames"), lk.artboard),
-                        ("all", "lock", tl!("Lock all"), lk.all),
-                    ] {
-                        // Lock Image Pixels includes Lock Transparent Pixels, which waits for it (#4892).
-                        let enabled = key != "transparency" || !lk.pixels;
-                        if ui.add_enabled_ui(enabled, |ui| icons::button(ui, icon, 20.0, on, tip)).inner.clicked() {
-                            let mut p = targets.clone();
-                            p["locks"] = json!({ key: !on });
-                            actions.push(("layer.setProps".into(), p));
+                    // Hovering a mode previews it on the canvas (#970).
+                    crate::blend_preview::hover(app, &ids, hovered.filter(|_| chosen.is_empty()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut o = l.opacity * 100.0;
+                        let field = widgets::popup_value_field(ui, opacity_label, &mut o, 0.0..=100.0, "%", LAYER_PCT_W);
+                        // On a narrow dock the (scrubby) label yields its room to the controls (#2309).
+                        let scrub = if show_opacity_label {
+                            scrub_pct_label(ui, opacity_label, &mut o, ui.available_width())
+                        } else {
+                            widgets::PopupFieldResponse::default()
+                        };
+                        if field.changed || scrub.changed {
+                            actions.push(pct_action(&targets, "opacity", o, scrub.drag.or(field.drag)));
                         }
-                    }
+                    });
                 });
-            }
-            if !t.pro {
-                let locked = l.locks.any();
-                if icons::button(ui, if locked { "lock" } else { "lock-open" }, 22.0, locked, tl!("Lock layer")).clicked() {
-                    actions.push(simple_lock_toggle(crate::doc_props_ui::is_background(&doc, l), l, &targets));
-                }
-            }
-            ui.add_enabled_ui(!bg, |ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut f = l.fill_opacity * 100.0;
-                    let field = widgets::popup_value_field(ui, fill_label, &mut f, 0.0..=100.0, "%", LAYER_PCT_W);
-                    let scrub = scrub_pct_label(ui, fill_label, &mut f, ui.available_width());
-                    if field.changed || scrub.changed {
-                        actions.push(pct_action(&targets, "fill", f, scrub.drag.or(field.drag)));
-                    }
-                })
             });
-        });
-        ui.add_space(2.0);
+            // Docks zero the item spacing: keep the Opacity and Fill fields apart (#155).
+            ui.add_space((theme::ROW_GAP - ui.spacing().item_spacing.y).max(0.0));
+            ui.horizontal(|ui| {
+                let lock_label = if t.pro { tl!("Lock:") } else { tl!("Lock") };
+                // Layer fill opacity (≠ Edit › Fill / path fill → Tô).
+                let lang = crate::i18n::current();
+                let fill_label = if t.pro { crate::i18n::tr_ctx(lang, "layers", "Fill:") } else { crate::i18n::tr_ctx(lang, "layers", "Fill") };
+                // In a narrow panel with long translated labels, drop the "Lock:" text (the icons keep
+                // their tooltips) rather than let the Fill label run over the lock icons.
+                let gap = ui.spacing().item_spacing.x;
+                let icons_w = if t.pro { 5.0 * 20.0 + gap } else { 22.0 + gap };
+                let fits = body_text_width(ui, lock_label) + icons_w + body_text_width(ui, fill_label) + LAYER_PCT_W + 2.0 * gap <= ui.available_width();
+                if fits {
+                    label(ui, lock_label);
+                }
+                if t.pro {
+                    // The lock icons touch, but only they: the Fill label keeps the same gap before its
+                    // field as Opacity's, so both stack in one right-aligned column (#2085).
+                    ui.scope(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let lk = l.locks;
+                        for (key, icon, tip, on) in [
+                            ("transparency", "grid-3x3", tl!("Lock transparent pixels"), lk.transparency),
+                            ("pixels", "brush", tl!("Lock image pixels"), lk.pixels),
+                            ("position", "move", tl!("Lock position"), lk.position),
+                            ("artboard", "scan", tl!("Prevent auto-nesting in and out of Artboards and Frames"), lk.artboard),
+                            ("all", "lock", tl!("Lock all"), lk.all),
+                        ] {
+                            // Lock Image Pixels includes Lock Transparent Pixels, which waits for it (#4892).
+                            let enabled = key != "transparency" || !lk.pixels;
+                            if ui.add_enabled_ui(enabled, |ui| icons::button(ui, icon, 20.0, on, tip)).inner.clicked() {
+                                let mut p = targets.clone();
+                                p["locks"] = json!({ key: !on });
+                                actions.push(("layer.setProps".into(), p));
+                            }
+                        }
+                    });
+                }
+                if !t.pro {
+                    let locked = l.locks.any();
+                    if icons::button(ui, if locked { "lock" } else { "lock-open" }, 22.0, locked, tl!("Lock layer")).clicked() {
+                        actions.push(simple_lock_toggle(crate::doc_props_ui::is_background(&doc, l), l, &targets));
+                    }
+                }
+                ui.add_enabled_ui(!bg, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut f = l.fill_opacity * 100.0;
+                        let field = widgets::popup_value_field(ui, fill_label, &mut f, 0.0..=100.0, "%", LAYER_PCT_W);
+                        let scrub = scrub_pct_label(ui, fill_label, &mut f, ui.available_width());
+                        if field.changed || scrub.changed {
+                            actions.push(pct_action(&targets, "fill", f, scrub.drag.or(field.drag)));
+                        }
+                    })
+                });
+            });
+            ui.add_space(2.0);
+        };
+        if t.pro {
+            layer_controls(ui);
+        } else {
+            widgets::soft_card_tight(ui, |ui| {
+                ui.set_width(ui.available_width());
+                layer_controls(ui);
+            });
+            ui.add_space(4.0);
+        }
     }
 
     // Top of the stack first, groups above their contents, closed groups' contents hidden (#126).
@@ -2560,7 +2584,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let footer = widgets::footer_height(ui) + ui.spacing().item_spacing.y;
     let fill = ui.available_height() > footer + 60.0;
     let rows_h = if fill { ui.available_height() - footer } else { f32::INFINITY };
-    egui::ScrollArea::vertical()
+    let rows_out = egui::ScrollArea::vertical()
         // Keep each document's position independent, even when tab indices change (#5522).
         .id_salt(("layer-rows", doc.id.0))
         .max_height(rows_h)
@@ -2644,6 +2668,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 actions.push(done);
             }
         });
+    widgets::scroll_fade_edges(ui, rows_out.inner_rect, rows_out.content_size, rows_out.state.offset);
     // A layer being dragged can also be dropped on the footer's Delete, New Layer and Group
     // buttons (#736); read the drag before it ends.
     let footer_drag = ctx.data(|d| d.get_temp::<u64>(egui::Id::new("layer-drag"))).map(|id| {
@@ -3324,7 +3349,7 @@ fn channels(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
-        empty(ui, tl!("No document"));
+        no_document(ui, "clock");
         return;
     };
     let doc = st.doc.clone();
@@ -3358,7 +3383,7 @@ fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // The dock gives History a fixed height: the rows scroll above the footer.
     let footer = if t.pro { widgets::footer_height(ui) + ui.spacing().item_spacing.y } else { 0.0 };
     let max_h = (ui.available_height() - footer).max(40.0);
-    egui::ScrollArea::vertical().id_salt("history-rows").max_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
+    let list = egui::ScrollArea::vertical().id_salt("history-rows").max_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
         // Snapshots head the list and scroll with the states, so many of them never push the
         // footer out of a short dock.
         snap_cmd = snapshot_rows(app, ui, selected_snap);
@@ -3375,7 +3400,7 @@ fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if selected {
                 ui.painter().rect_filled(rect, if t.pro { 0.0 } else { t.radius_sm }, if t.pro { t.row_selected } else { t.accent_soft });
             } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 0.0, t.hover.gamma_multiply(0.5));
+                ui.painter().rect_filled(rect, if t.pro { 0.0 } else { t.radius_sm }, t.hover.gamma_multiply(0.5));
             }
             let icon = match e.as_str() {
                 s if s.contains("Brush") || s.contains("Eraser") => "brush",
@@ -3404,6 +3429,7 @@ fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         }
     });
+    widgets::scroll_fade_edges(ui, list.inner_rect, list.content_size, list.state.offset);
     if let Some(drag) = drag
         && let Some(p) = ctx.input(|i| i.pointer.interact_pos())
     {
@@ -3715,7 +3741,9 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
-        empty(ui, tl!("No properties"));
+        ui.add_space(6.0);
+        widgets::empty_state(ui, "sliders-horizontal", tl!("No properties"), &format!("{} · {}", tl!("New Document"), tl!("Open…")));
+        ui.add_space(6.0);
         return;
     };
     let doc = st.doc.clone();
@@ -3766,7 +3794,10 @@ fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             crate::gradient_ui::properties(app, ui, layer);
             ui.add_space(6.0);
         }
-        layer_controls(app, ui, layer);
+        widgets::soft_card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            layer_controls(app, ui, layer);
+        });
         if matches!(layer.content, LayerContent::Text(_)) {
             crate::type_tool::type_properties(app, ui);
         }
@@ -3779,8 +3810,6 @@ fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 /// Photoshop's Adjustments panel: a grid of one-click adjustment layers.
 fn adjustments_grid(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    ui.label(RichText::new(tl!("Add an adjustment")).color(t.text_dim));
-    ui.add_space(4.0);
     let items: [(&str, &str, &str); 16] = [
         ("brightnessContrast", "sun", tl!("Brightness/Contrast")),
         ("levels", "gauge", tl!("Levels")),
@@ -3800,14 +3829,24 @@ fn adjustments_grid(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ("colorLookup", "grid-3x3", tl!("Color Lookup")),
     ];
     let mut run = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
-        for (kind, icon, tip) in items {
-            if icons::button(ui, icon, 30.0, false, tip).clicked() {
-                run = Some(format!("layer.newAdjustmentLayer.{kind}"));
+    let mut grid = |ui: &mut egui::Ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+            for (kind, icon, tip) in items {
+                if icons::button(ui, icon, 30.0, false, tip).clicked() {
+                    run = Some(format!("layer.newAdjustmentLayer.{kind}"));
+                }
             }
-        }
-    });
+        });
+    };
+    if t.pro {
+        ui.label(RichText::new(tl!("Add an adjustment")).color(t.text_dim));
+        ui.add_space(4.0);
+        grid(ui);
+    } else {
+        widgets::section_card(ui, tl!("Add an adjustment"), |ui| grid(ui));
+        ui.add_space(4.0);
+    }
     if let Some(id) = run {
         let _ = app.run(&id, json!({}));
         app.ui.dock_tabs.properties = 0;

@@ -1740,7 +1740,7 @@ fn path_context_actions(entry: &PathEntry, doc: &Document) -> Vec<(&'static str,
 pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
-        ui.label(egui::RichText::new(tl!("No document")).color(t.text_faint));
+        crate::panels::no_document(ui, "spline");
         return;
     };
     let doc = st.doc.clone();
@@ -1752,11 +1752,14 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let footer = crate::widgets::footer_height(ui) + ui.spacing().item_spacing.y;
     let fill = ui.available_height() > footer + 60.0;
     let rows_h = if fill { ui.available_height() - footer } else { f32::INFINITY };
-    egui::ScrollArea::vertical().id_salt("path-rows").max_height(rows_h).min_scrolled_height(if fill { rows_h } else { 0.0 }).auto_shrink([false, !fill]).show(
-        ui,
-        |ui| {
+    let list = egui::ScrollArea::vertical()
+        .id_salt("path-rows")
+        .max_height(rows_h)
+        .min_scrolled_height(if fill { rows_h } else { 0.0 })
+        .auto_shrink([false, !fill])
+        .show(ui, |ui| {
             if rows.is_empty() {
-                ui.label(egui::RichText::new(tl!("Draw with the Pen tool (P) or make a work path from a selection.")).color(t.text_faint).size(11.5));
+                crate::widgets::empty_state(ui, "spline", tl!("Paths"), tl!("Draw with the Pen tool (P) or make a work path from a selection."));
             }
             for PathEntry { name, path, kind } in &rows {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
@@ -1768,10 +1771,11 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 // Rows are painted: name them for screen readers and UI tests.
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::SelectableLabel, true, name));
                 let sel = app.ui.selected_path.as_deref() == Some(key.as_str());
+                let radius = if t.pro { 0.0 } else { t.radius_sm };
                 if sel {
-                    ui.painter().rect_filled(r, 0.0, t.row_selected);
+                    ui.painter().rect_filled(r, radius, t.row_selected);
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.5));
+                    ui.painter().rect_filled(r, radius, t.hover.gamma_multiply(0.5));
                 }
                 let thumbnail = Rect::from_min_size(pos2(r.left() + 8.0, r.top() + 4.0), vec2(28.0, 28.0));
                 thumb(ui, thumbnail, path, &doc);
@@ -1821,7 +1825,9 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         }
                     });
                 });
-                ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.separator));
+                if t.pro {
+                    ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.separator));
+                }
             }
             // Clicking the empty area deselects the path, as in Photoshop: new fill and
             // adjustment layers then take the selection as their mask instead (#1419).
@@ -1830,8 +1836,8 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if rest.is_positive() && ui.interact(rest, ui.id().with("paths-empty"), Sense::click()).clicked() {
                 app.ui.selected_path = None;
             }
-        },
-    );
+        });
+    crate::widgets::scroll_fade_edges(ui, list.inner_rect, list.content_size, list.state.offset);
     let sel = app.ui.selected_path.clone().filter(|s| s != "layer" || has_layer_path).unwrap_or_else(|| "work".into());
     let buttons = crate::widgets::panel_footer(ui, |ui| {
         let fg = hex(app.session.tools.foreground);

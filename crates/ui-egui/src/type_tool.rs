@@ -2186,9 +2186,14 @@ pub fn type_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 /// group. Without a type layer (or a type edit) there is nothing to show.
 pub fn character_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui, paragraph: bool) {
     if styles_at(app).is_none() {
-        let t = crate::theme::Tokens::get(ui.ctx());
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(tl!("Select a type layer to edit its character and paragraph settings.")).color(t.text_dim));
+        ui.add_space(6.0);
+        let hint = tl!("Select a type layer to edit its character and paragraph settings.");
+        if paragraph {
+            crate::widgets::empty_state(ui, "type", tl!("Paragraph"), hint);
+        } else {
+            crate::widgets::empty_state(ui, "type", tl!("Character"), hint);
+        }
+        ui.add_space(6.0);
         return;
     }
     type_sections(app, ui, !paragraph, paragraph);

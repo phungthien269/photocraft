@@ -310,13 +310,23 @@ pub fn segmented_tabs(ui: &mut Ui, id: egui::Id, labels: &[&str], selected: usiz
 /// A soft group card for floating panels: a rounded, subtly bordered surface with 10×6 padding.
 /// Themes keep their own radii; Classic keeps its square bevels.
 pub fn soft_card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    soft_card_inset(ui, 10, add)
+}
+
+/// [`soft_card`] with a narrower horizontal inset, for the dock's dense control rows where the
+/// 10 pt inset would tip a translated label into hiding on a 250 pt dock (Layers' Opacity row).
+pub fn soft_card_tight<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    soft_card_inset(ui, 6, add)
+}
+
+fn soft_card_inset<R>(ui: &mut Ui, inset: i8, add: impl FnOnce(&mut Ui) -> R) -> R {
     let t = Tokens::get(ui.ctx());
     let radius = CornerRadius::same(if t.bevel { t.radius_sm as u8 } else { t.radius_lg.max(10.0) as u8 });
     egui::Frame::NONE
         .fill(t.field)
         .stroke(Stroke::new(1.0, t.card_border))
         .corner_radius(radius)
-        .inner_margin(egui::Margin::symmetric(10, 6))
+        .inner_margin(egui::Margin::symmetric(inset, 6))
         .show(ui, add)
         .inner
 }
@@ -355,6 +365,57 @@ pub fn status_note(ui: &mut Ui, text: &str, error: bool) {
     });
 }
 
+/// A titled card inside a dock panel: [`soft_card`] with a [`section_header`] row. The shared
+/// look of the dock's sections (Adjustments, Brushes, the new floating panels) in every theme.
+pub fn section_card<R>(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    soft_card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        section_header(ui, title, |_| {});
+        add(ui)
+    })
+}
+
+/// A rounded row of actions (a footer or toolbar inside a panel), on the field surface. The
+/// caller lays the controls out left to right; use `right_to_left` internally for a footer.
+pub fn action_row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let t = Tokens::get(ui.ctx());
+    let radius = CornerRadius::same(if t.bevel { t.radius_sm as u8 } else { t.radius_lg.max(10.0) as u8 });
+    egui::Frame::NONE
+        .fill(t.field)
+        .stroke(Stroke::new(1.0, t.card_border))
+        .corner_radius(radius)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| add(ui)).inner
+        })
+        .inner
+}
+
+/// A dock panel's empty state: a soft card with an icon, a title and one line of guidance. The
+/// caller passes translated strings; `hint` may be empty when the title says it all.
+pub fn empty_state(ui: &mut Ui, icon: &str, title: &str, hint: &str) {
+    let t = Tokens::get(ui.ctx());
+    let radius = CornerRadius::same(if t.bevel { t.radius_sm as u8 } else { t.radius_lg.max(10.0) as u8 });
+    egui::Frame::NONE.fill(t.field).stroke(Stroke::new(1.0, t.card_border)).corner_radius(radius).inner_margin(egui::Margin::symmetric(12, 12)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical_centered(|ui| {
+                let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+                ui.painter().circle_filled(icon_rect.center(), 15.0, t.accent_soft);
+                crate::icons::paint(ui, icon_rect, icon, 15.0, t.accent_text);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(title).font(theme::semibold(12.5)).color(t.text));
+                if !hint.is_empty() {
+                    ui.add_space(2.0);
+                    ui.add(egui::Label::new(egui::RichText::new(hint).size(12.0).color(t.text_dim)).wrap());
+                }
+            });
+        },
+    );
+}
+
 /// Fade the bottom edge of a scrolling body into the panel card, so a row cut by the fold reads as
 /// "more below" instead of a hard clip. Call after the `ScrollArea` has drawn, only when its
 /// content is taller than the viewport and the view is not already at the end.
@@ -374,6 +435,32 @@ pub fn scroll_fade_bottom(ui: &Ui, body: Rect) {
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
     ui.painter().with_clip_rect(body).add(mesh);
+}
+
+/// Both edges of a scrolling body: the top fades while content is above the viewport, the bottom
+/// while content is below. `content` and `offset` are the `ScrollArea` output's values. Call after
+/// the area has drawn; the fades are paint only.
+pub fn scroll_fade_edges(ui: &Ui, body: Rect, content: Vec2, offset: Vec2) {
+    if !body.is_positive() || !content.y.is_finite() || !offset.y.is_finite() {
+        return;
+    }
+    if offset.y > 1.0 {
+        let t = Tokens::get(ui.ctx());
+        let h = 14.0_f32.min(body.height() * 0.25);
+        let rect = Rect::from_min_max(body.min, pos2(body.right(), body.top() + h));
+        let clear = Color32::from_rgba_unmultiplied(t.card.r(), t.card.g(), t.card.b(), 0);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(rect.left_top(), t.card);
+        mesh.colored_vertex(rect.right_top(), t.card);
+        mesh.colored_vertex(rect.right_bottom(), clear);
+        mesh.colored_vertex(rect.left_bottom(), clear);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        ui.painter().with_clip_rect(body).add(mesh);
+    }
+    if content.y > body.height() + 1.0 && offset.y + body.height() < content.y - 1.0 {
+        scroll_fade_bottom(ui, body);
+    }
 }
 
 /// Give an egui slider the panels' rail. Dark themes keep the accent-filled track they had; light

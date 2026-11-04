@@ -349,6 +349,9 @@ pub(crate) struct Place<'a> {
     pub(crate) max_h: f32,
     pub(crate) new_tip: &'a str,
     pub(crate) flush: bool,
+    /// A dock panel pins the footer to the body's bottom; a floating panel lets it follow the
+    /// list, so panels with cards below the browser keep their order.
+    pub(crate) pin_footer: bool,
 }
 
 /// Space between the cells of a preset grid, and the grid's inset from the panel's left edge.
@@ -364,7 +367,7 @@ pub(crate) fn browser(
     thumb: &mut dyn FnMut(&egui::Ui, Rect, usize, usize),
 ) -> Vec<Ev> {
     let t = Tokens::get(ui.ctx());
-    let Place { canvas, max_h, new_tip, flush } = place;
+    let Place { canvas, max_h, new_tip, flush, pin_footer } = place;
     let mut ev = Vec::new();
     let size = *st.sizes.get(panel).unwrap_or(&40.0);
     let list = size <= MIN_THUMB + 0.5;
@@ -415,155 +418,168 @@ pub(crate) fn browser(
     let rows = ((max_h - header_h).max(0.0) / row_h).ceil().max(1.0);
     let snapped = header_h + rows * row_h;
     let max_h = if max_h >= header_h + row_h * 0.5 && snapped <= cap { snapped } else { max_h };
-    egui::ScrollArea::vertical().id_salt(("preset-scroll", panel)).max_height(max_h).min_scrolled_height(max_h.min(64.0)).auto_shrink([false, true]).show(
-        ui,
-        |ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
-            for &gi in &display {
-                let Some(g) = groups.get(gi) else { continue };
-                let open = group_open(st, panel, gi, &g.name);
-                let (hr, hresp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
-                if hresp.hovered() || hresp.dragged() {
-                    ui.painter().rect_filled(hr, 2.0, t.hover.gamma_multiply(0.5));
+    let list =
+        egui::ScrollArea::vertical().id_salt(("preset-scroll", panel)).max_height(max_h).min_scrolled_height(max_h.min(64.0)).auto_shrink([false, true]).show(
+            ui,
+            |ui| {
+                ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
+                // Only the dock's swatch/gradient/pattern browsers own their empty state; the
+                // floating Color Presets panel prints its own message above the browser.
+                if matches!(panel, "swatches" | "gradients" | "patterns") && groups.iter().all(|g| g.items.is_empty()) {
+                    widgets::empty_state(ui, "palette", tl!("No presets of this type."), "");
+                    ui.add_space(2.0);
                 }
-                let tri = Rect::from_center_size(pos2(hr.left() + 9.0, hr.center().y), vec2(12.0, 12.0));
-                crate::icons::paint(ui, tri, if open { "chevron-down" } else { "chevron-right" }, 10.0, t.text_dim);
-                let fold = Rect::from_center_size(pos2(hr.left() + 25.0, hr.center().y), vec2(14.0, 14.0));
-                crate::icons::paint(ui, fold, if open { "folder-open" } else { "folder" }, 12.0, t.icon);
-                ui.painter().text(pos2(hr.left() + 37.0, hr.center().y), Align2::LEFT_CENTER, &g.name, FontId::proportional(11.5), t.text);
-                if hresp.clicked() {
-                    let k = format!("{panel}/{}", g.name);
-                    if st.open_groups.remove(&k) {
-                        // Closing a folder a panel just opened.
-                        st.toggled.remove(&k);
-                    } else if !st.toggled.remove(&k) {
-                        st.toggled.insert(k);
+                for &gi in &display {
+                    let Some(g) = groups.get(gi) else { continue };
+                    let open = group_open(st, panel, gi, &g.name);
+                    let (hr, hresp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
+                    if hresp.hovered() || hresp.dragged() {
+                        ui.painter().rect_filled(hr, if t.pro { 2.0 } else { t.radius_sm }, t.hover.gamma_multiply(0.5));
                     }
-                }
-                hresp.context_menu(|ui| {
-                    if ui.button(tl!("Rename Group…")).clicked() {
-                        st.renaming = Some((panel.to_string(), format!("group:{}", g.name), g.name.clone()));
-                        ui.close();
-                    }
-                    if ui.button(tl!("Delete Group")).clicked() {
-                        ev.push(Ev::DeleteGroup(g.name.clone()));
-                        ui.close();
-                    }
-                });
-                if hresp.dragged()
-                    && let Some(p) = ui.ctx().pointer_interact_pos()
-                {
-                    drag = Some((gi, p));
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                }
-                if hresp.drag_stopped()
-                    && let Some(p) = ui.ctx().pointer_interact_pos()
-                {
-                    released = Some((gi, p));
-                }
-                headers.push((gi, hr, g.name.clone()));
-                if !open {
-                    continue;
-                }
-                let w = ui.available_width();
-                let pad = if list { 0.0 } else { GRID_INSET };
-                let gap = if list || flush { 0.0 } else { GRID_GAP };
-                let (cell, cols) = if list {
-                    (vec2(w, 24.0), 1)
-                } else {
-                    let cols = ((w - pad + gap) / (size + gap)).floor().max(1.0) as usize;
-                    (vec2(size, size), cols)
-                };
-                let rows = g.items.len().div_ceil(cols);
-                let (area, _) = ui.allocate_exact_size(vec2(w, rows as f32 * (cell.y + gap) + 2.0), Sense::hover());
-                for (ii, it) in g.items.iter().enumerate() {
-                    let (cx, cy) = ((ii % cols) as f32, (ii / cols) as f32);
-                    let r = Rect::from_min_size(area.min + vec2(pad + cx * (cell.x + gap), cy * (cell.y + gap)), cell);
-                    let resp = ui.interact(r, ui.id().with((panel, gi, ii)), Sense::click_and_drag());
-                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &it.name));
-                    let is_sel = selected.as_deref() == Some(&it.key);
-                    if list {
-                        if is_sel {
-                            ui.painter().rect_filled(r, 0.0, t.row_selected);
-                        } else if resp.hovered() {
-                            ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.5));
-                        }
-                        let tr = Rect::from_min_size(r.min + vec2(24.0, 2.0), vec2(20.0, 20.0));
-                        thumb(ui, tr, gi, ii);
-                        ui.painter().text(pos2(tr.right() + 8.0, r.center().y), Align2::LEFT_CENTER, &it.name, FontId::proportional(11.5), t.text);
-                    } else {
-                        thumb(ui, r, gi, ii);
-                        // Touching cells draw no border of their own: only the selected and the
-                        // hovered one are outlined, over their neighbours, as in Photoshop.
-                        let stroke = if is_sel {
-                            Some((Stroke::new(2.0, t.accent), egui::StrokeKind::Outside))
-                        } else if resp.hovered() {
-                            Some((Stroke::new(1.0, t.text_dim), egui::StrokeKind::Outside))
-                        } else if flush {
-                            None
-                        } else {
-                            Some((Stroke::new(1.0, t.card_border), egui::StrokeKind::Inside))
-                        };
-                        if let Some((stroke, kind)) = stroke {
-                            ui.painter().rect_stroke(r, CornerRadius::same(if flush { 0 } else { 2 }), stroke, kind);
+                    let tri = Rect::from_center_size(pos2(hr.left() + 9.0, hr.center().y), vec2(12.0, 12.0));
+                    crate::icons::paint(ui, tri, if open { "chevron-down" } else { "chevron-right" }, 10.0, t.text_dim);
+                    let fold = Rect::from_center_size(pos2(hr.left() + 25.0, hr.center().y), vec2(14.0, 14.0));
+                    crate::icons::paint(ui, fold, if open { "folder-open" } else { "folder" }, 12.0, t.icon);
+                    ui.painter().text(pos2(hr.left() + 37.0, hr.center().y), Align2::LEFT_CENTER, &g.name, FontId::proportional(11.5), t.text);
+                    if hresp.clicked() {
+                        let k = format!("{panel}/{}", g.name);
+                        if st.open_groups.remove(&k) {
+                            // Closing a folder a panel just opened.
+                            st.toggled.remove(&k);
+                        } else if !st.toggled.remove(&k) {
+                            st.toggled.insert(k);
                         }
                     }
-                    let resp = if list { resp } else { resp.on_hover_text(&it.name) };
-                    if resp.double_clicked() {
-                        ev.push(Ev::Activate(it.key.clone()));
-                    } else if resp.clicked() {
-                        ev.push(Ev::Select(it.key.clone()));
-                    }
-                    if resp.dragged()
-                        && let Some(pp) = ui.ctx().pointer_interact_pos()
-                    {
-                        // A ghost of the swatch follows the pointer.
-                        let lp = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("preset-drag")));
-                        let gr = Rect::from_center_size(pp, vec2(28.0, 28.0));
-                        lp.rect_filled(gr, 3.0, t.card.gamma_multiply(0.8));
-                        lp.rect_stroke(gr, 3.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Outside);
-                        lp.text(gr.center(), Align2::CENTER_CENTER, "+", FontId::proportional(16.0), t.accent);
-                    }
-                    if resp.drag_stopped()
-                        && let Some(pp) = ui.ctx().pointer_interact_pos()
-                        && !r.contains(pp)
-                    {
-                        dropped = Some((it.key.clone(), pp));
-                    }
-                    resp.context_menu(|ui| {
-                        if ui.button(tl!("Rename…")).clicked() {
-                            st.renaming = Some((panel.to_string(), it.key.clone(), it.name.clone()));
+                    hresp.context_menu(|ui| {
+                        if ui.button(tl!("Rename Group…")).clicked() {
+                            st.renaming = Some((panel.to_string(), format!("group:{}", g.name), g.name.clone()));
                             ui.close();
                         }
-                        if ui.button(tl!("Delete")).clicked() {
-                            ev.push(Ev::Delete(it.key.clone()));
+                        if ui.button(tl!("Delete Group")).clicked() {
+                            ev.push(Ev::DeleteGroup(g.name.clone()));
                             ui.close();
                         }
-                        ui.menu_button(tl!("Move to"), |ui| {
-                            for gname in group_names.iter().filter(|n| **n != g.name) {
-                                if ui.button(gname).clicked() {
-                                    ev.push(Ev::Move(it.key.clone(), gname.clone()));
-                                    ui.close();
-                                }
-                            }
-                        });
                     });
+                    if hresp.dragged()
+                        && let Some(p) = ui.ctx().pointer_interact_pos()
+                    {
+                        drag = Some((gi, p));
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    }
+                    if hresp.drag_stopped()
+                        && let Some(p) = ui.ctx().pointer_interact_pos()
+                    {
+                        released = Some((gi, p));
+                    }
+                    headers.push((gi, hr, g.name.clone()));
+                    if !open {
+                        continue;
+                    }
+                    let w = ui.available_width();
+                    let pad = if list { 0.0 } else { GRID_INSET };
+                    let gap = if list || flush { 0.0 } else { GRID_GAP };
+                    let (cell, cols) = if list {
+                        (vec2(w, 24.0), 1)
+                    } else {
+                        let cols = ((w - pad + gap) / (size + gap)).floor().max(1.0) as usize;
+                        (vec2(size, size), cols)
+                    };
+                    let rows = g.items.len().div_ceil(cols);
+                    let (area, _) = ui.allocate_exact_size(vec2(w, rows as f32 * (cell.y + gap) + 2.0), Sense::hover());
+                    for (ii, it) in g.items.iter().enumerate() {
+                        let (cx, cy) = ((ii % cols) as f32, (ii / cols) as f32);
+                        let r = Rect::from_min_size(area.min + vec2(pad + cx * (cell.x + gap), cy * (cell.y + gap)), cell);
+                        let resp = ui.interact(r, ui.id().with((panel, gi, ii)), Sense::click_and_drag());
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &it.name));
+                        let is_sel = selected.as_deref() == Some(&it.key);
+                        if list {
+                            let radius = if t.pro { 0.0 } else { t.radius_sm };
+                            if is_sel {
+                                ui.painter().rect_filled(r, radius, t.row_selected);
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(r, radius, t.hover.gamma_multiply(0.5));
+                            }
+                            let tr = Rect::from_min_size(r.min + vec2(24.0, 2.0), vec2(20.0, 20.0));
+                            thumb(ui, tr, gi, ii);
+                            ui.painter().text(pos2(tr.right() + 8.0, r.center().y), Align2::LEFT_CENTER, &it.name, FontId::proportional(11.5), t.text);
+                        } else {
+                            thumb(ui, r, gi, ii);
+                            // Touching cells draw no border of their own: only the selected and the
+                            // hovered one are outlined, over their neighbours, as in Photoshop.
+                            let stroke = if is_sel {
+                                Some((Stroke::new(2.0, t.accent), egui::StrokeKind::Outside))
+                            } else if resp.hovered() {
+                                Some((Stroke::new(1.0, t.text_dim), egui::StrokeKind::Outside))
+                            } else if flush {
+                                None
+                            } else {
+                                Some((Stroke::new(1.0, t.card_border), egui::StrokeKind::Inside))
+                            };
+                            if let Some((stroke, kind)) = stroke {
+                                ui.painter().rect_stroke(r, CornerRadius::same(if flush { 0 } else { 2 }), stroke, kind);
+                            }
+                        }
+                        let resp = if list { resp } else { resp.on_hover_text(&it.name) };
+                        if resp.double_clicked() {
+                            ev.push(Ev::Activate(it.key.clone()));
+                        } else if resp.clicked() {
+                            ev.push(Ev::Select(it.key.clone()));
+                        }
+                        if resp.dragged()
+                            && let Some(pp) = ui.ctx().pointer_interact_pos()
+                        {
+                            // A ghost of the swatch follows the pointer.
+                            let lp = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("preset-drag")));
+                            let gr = Rect::from_center_size(pp, vec2(28.0, 28.0));
+                            lp.rect_filled(gr, 3.0, t.card.gamma_multiply(0.8));
+                            lp.rect_stroke(gr, 3.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Outside);
+                            lp.text(gr.center(), Align2::CENTER_CENTER, "+", FontId::proportional(16.0), t.accent);
+                        }
+                        if resp.drag_stopped()
+                            && let Some(pp) = ui.ctx().pointer_interact_pos()
+                            && !r.contains(pp)
+                        {
+                            dropped = Some((it.key.clone(), pp));
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button(tl!("Rename…")).clicked() {
+                                st.renaming = Some((panel.to_string(), it.key.clone(), it.name.clone()));
+                                ui.close();
+                            }
+                            if ui.button(tl!("Delete")).clicked() {
+                                ev.push(Ev::Delete(it.key.clone()));
+                                ui.close();
+                            }
+                            ui.menu_button(tl!("Move to"), |ui| {
+                                for gname in group_names.iter().filter(|n| **n != g.name) {
+                                    if ui.button(gname).clicked() {
+                                        ev.push(Ev::Move(it.key.clone(), gname.clone()));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        });
+                    }
                 }
-            }
-            // Insertion line while a folder is dragged by its header.
-            if let Some((from, p)) = drag {
-                let before = group_drop_before(&headers, from, p.y);
-                let anchor = match before {
-                    Some(i) => headers.iter().find(|(x, _, _)| *x == i).map(|(_, r, _)| *r),
-                    None => headers.last().map(|(_, r, _)| *r),
-                };
-                if let Some(r) = anchor {
-                    let y = if before.is_some() { r.top() - 1.0 } else { r.bottom() + 1.0 };
-                    ui.painter().line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(2.0, t.accent));
+                // Insertion line while a folder is dragged by its header.
+                if let Some((from, p)) = drag {
+                    let before = group_drop_before(&headers, from, p.y);
+                    let anchor = match before {
+                        Some(i) => headers.iter().find(|(x, _, _)| *x == i).map(|(_, r, _)| *r),
+                        None => headers.last().map(|(_, r, _)| *r),
+                    };
+                    if let Some(r) = anchor {
+                        let y = if before.is_some() { r.top() - 1.0 } else { r.bottom() + 1.0 };
+                        ui.painter().line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(2.0, t.accent));
+                    }
                 }
-            }
-        },
-    );
+            },
+        );
+    widgets::scroll_fade_edges(ui, list.inner_rect, list.content_size, list.state.offset);
+    if pin_footer {
+        let space = (ui.available_height() - footer_h).max(0.0);
+        ui.add_space(space);
+    }
     // Apply the drop now every header rect is known; the next frame draws the new order.
     if let Some((from, p)) = released {
         let before = group_drop_before(&headers, from, p.y);
@@ -584,8 +600,7 @@ pub(crate) fn browser(
     }
     // Footer: thumbnail size | New Group, New, Delete.
     let footer_top = ui.min_rect().bottom();
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    let footer = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let mut s = size;
         // Stretch the zoom slider up to the icon group: a fixed 90 points left a dead gap, most
@@ -612,7 +627,13 @@ pub(crate) fn browser(
                 ev.push(Ev::NewGroup);
             }
         });
-    });
+    };
+    ui.add_space(4.0);
+    if t.pro || !pin_footer {
+        ui.horizontal(footer);
+    } else {
+        widgets::action_row(ui, footer);
+    }
     let measured = ui.min_rect().bottom() - footer_top;
     if measured.is_finite() && (measured - footer_h).abs() > 0.5 {
         ui.data_mut(|d| d.insert_temp(footer_id, measured));
@@ -707,11 +728,17 @@ pub fn gradients_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let canvas = canvas_drop_rect(app);
     let mut st = std::mem::take(&mut app.ui.presets_ui);
     let max_h = (ui.available_height() - 40.0).clamp(90.0, 260.0);
-    let events =
-        browser(ui, &mut st, "gradients", &groups, Place { canvas, max_h, new_tip: tl!("Create new gradient"), flush: false }, &mut |ui, r, gi, ii| {
+    let events = browser(
+        ui,
+        &mut st,
+        "gradients",
+        &groups,
+        Place { canvas, max_h, new_tip: tl!("Create new gradient"), flush: false, pin_footer: true },
+        &mut |ui, r, gi, ii| {
             let stops = groups_src[gi].items[ii].resolve(fg, bg);
             paint_gradient(ui, r, &stops);
-        });
+        },
+    );
     app.ui.presets_ui = st;
     for e in events {
         match &e {
@@ -761,7 +788,7 @@ pub fn patterns_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         &mut st,
         "patterns",
         &groups,
-        Place { canvas, max_h, new_tip: tl!("Create new pattern from the selection"), flush: false },
+        Place { canvas, max_h, new_tip: tl!("Create new pattern from the selection"), flush: false, pin_footer: true },
         &mut |ui, r, gi, ii| {
             let tex = pattern_texture(&ctx, &pats[gi][ii]);
             ui.painter().image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
@@ -867,7 +894,7 @@ pub fn styles_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         &mut st,
         "styles",
         &groups,
-        Place { canvas, max_h: 300.0, new_tip: tl!("Create new style from the selected layer"), flush: false },
+        Place { canvas, max_h: 300.0, new_tip: tl!("Create new style from the selected layer"), flush: false, pin_footer: false },
         &mut |ui, r, gi, ii| {
             ui.painter().rect_filled(r, 2.0, t.field);
             ui.painter().image(texes[gi][ii].id(), r, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
@@ -911,7 +938,7 @@ pub fn shapes_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         &mut st,
         "shapes",
         &groups,
-        Place { canvas, max_h: 300.0, new_tip: tl!("Create new shape from the current path"), flush: false },
+        Place { canvas, max_h: 300.0, new_tip: tl!("Create new shape from the current path"), flush: false, pin_footer: false },
         &mut |ui, r, gi, ii| {
             let tex = shape_texture(&ctx, &src[gi].items[ii]);
             ui.painter().image(tex.id(), r.shrink(2.0), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), t.text);

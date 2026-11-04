@@ -351,7 +351,7 @@ fn channel_picker(ui: &mut egui::Ui, id: egui::Id, label: &str) -> usize {
 pub fn histogram_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
-        ui.label(egui::RichText::new(tl!("No document")).color(t.text_faint));
+        crate::panels::no_document(ui, "gauge");
         return;
     };
     let (doc_id, rev) = (st.doc.id, st.revision);
@@ -417,7 +417,18 @@ pub fn histogram_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
-    let Some((_, _, _, h)) = app.doc_hist.clone() else { return };
+    let Some((_, _, _, h)) = app.doc_hist.clone() else {
+        // The worker needs at least a frame on a large document: say so instead of leaving the
+        // panel blank (a plain row, so the panel also works in a bare test context without the
+        // custom dock fonts).
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(14.0));
+            ui.label(egui::RichText::new(tl!("Working…")).color(t.text_dim));
+        });
+        ui.add_space(6.0);
+        return;
+    };
     // 1 when the statistics count every pixel; higher when a downsampled proxy stood in.
     let level = h.level.max(1);
     let ch = channel_picker(ui, egui::Id::new("histogram-panel-ch"), "Channel:");

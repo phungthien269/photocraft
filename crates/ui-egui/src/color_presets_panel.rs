@@ -1369,7 +1369,14 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     ui.add_space(6.0);
                 }
                 let max_h = (body_height - 340.0).clamp(90.0, 300.0);
-                events = preset_panels::browser(ui, &mut st, PANEL, &groups, Place { canvas, max_h, new_tip: tl!(text::NEW), flush: false }, thumb);
+                events = preset_panels::browser(
+                    ui,
+                    &mut st,
+                    PANEL,
+                    &groups,
+                    Place { canvas, max_h, new_tip: tl!(text::NEW), flush: false, pin_footer: false },
+                    thumb,
+                );
                 ui.add_space(6.0);
                 widgets::soft_card(ui, |ui| {
                     ui.set_width(ui.available_width());

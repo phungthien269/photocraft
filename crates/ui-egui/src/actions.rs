@@ -685,9 +685,9 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             *expanded = true;
         }
     }
-    egui::ScrollArea::vertical().id_salt("actions-rows").max_height(max_h).min_scrolled_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
+    let list = egui::ScrollArea::vertical().id_salt("actions-rows").max_height(max_h).min_scrolled_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
         if rows.is_empty() {
-            ui.label(egui::RichText::new(tl!("Record ● a sequence of edits, then play ▶ it on any document.")).color(t.text_faint).size(11.5));
+            crate::widgets::empty_state(ui, "play", tl!("Actions"), tl!("Record ● a sequence of edits, then play ▶ it on any document."));
         }
         if egui::DragAndDrop::has_payload_of_type::<DragRow>(ui.ctx()) {
             let clip = ui.clip_rect();
@@ -717,7 +717,7 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let (hr, hresp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
                 hresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, !collapsed, set));
                 if hresp.hovered() {
-                    ui.painter().rect_filled(hr, 0.0, t.hover.gamma_multiply(0.5));
+                    ui.painter().rect_filled(hr, if t.pro { 0.0 } else { t.radius_sm }, t.hover.gamma_multiply(0.5));
                 }
                 let tri = Rect::from_center_size(pos2(hr.left() + 12.0, hr.center().y), vec2(8.0, 8.0));
                 let pts = if collapsed {
@@ -762,9 +762,9 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if button_mode {
                 ui.painter().rect_filled(rect, 3.0, button_fill(swatch, &t));
             } else if sel {
-                ui.painter().rect_filled(rect, 0.0, t.row_selected);
+                ui.painter().rect_filled(rect, if t.pro { 0.0 } else { t.radius_sm }, t.row_selected);
             } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 0.0, t.hover.gamma_multiply(0.5));
+                ui.painter().rect_filled(rect, if t.pro { 0.0 } else { t.radius_sm }, t.hover.gamma_multiply(0.5));
             }
             if let Some(change) = drag_row(ui, &resp, DragRow { action: i, step: None }, &t) {
                 moved = Some(change);
@@ -883,9 +883,9 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     let selected = app.ui.actions.selected == Some(i) && app.ui.actions.selected_step == Some(step);
                     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &label));
                     if selected {
-                        ui.painter().rect_filled(r, 0.0, t.row_selected);
+                        ui.painter().rect_filled(r, if t.pro { 0.0 } else { t.radius_sm }, t.row_selected);
                     } else if response.hovered() {
-                        ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.5));
+                        ui.painter().rect_filled(r, if t.pro { 0.0 } else { t.radius_sm }, t.hover.gamma_multiply(0.5));
                     }
                     if let Some(change) = drag_row(ui, &response, DragRow { action: i, step: Some(step) }, &t) {
                         moved = Some(change);
@@ -927,6 +927,7 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         }
     });
+    crate::widgets::scroll_fade_edges(ui, list.inner_rect, list.content_size, list.state.offset);
     if let Some((action, step)) = toggled {
         let _ = app.run("actions.toggle", json!({"action": action, "step": step}));
     }
@@ -954,9 +955,10 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if let Some((source, to)) = moved {
         move_row(app, source, to);
     }
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+    let footer = |ui: &mut egui::Ui| {
+        // At the dock's 250-point minimum the mode button plus five icons only fit without
+        // inter-button gaps (the rounded row keeps them visually apart).
+        ui.spacing_mut().item_spacing.x = if ui.available_width() < 240.0 { 0.0 } else { 2.0 };
         let recording_now = app.session.actions.recording.is_some();
         if crate::icons::button(ui, "square", 24.0, false, tl!("Stop playing/recording")).clicked() && recording_now {
             let _ = app.run("actions.stop", json!({}));
@@ -991,7 +993,13 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         if mode_button.clicked() {
             app.ui.actions.button_mode = !app.ui.actions.button_mode;
         }
-    });
+    };
+    if t.pro {
+        ui.add_space(4.0);
+        ui.horizontal(footer);
+    } else {
+        crate::widgets::action_row(ui, footer);
+    }
     if let Some(i) = play_idx {
         match app.run("actions.play", json!({"action": i})) {
             Ok(v) => report_play(app, &v),

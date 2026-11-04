@@ -34,129 +34,144 @@ fn run(app: &mut PhotocraftApp, id: &str, p: Value) {
 pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
-        ui.label(egui::RichText::new(tl!("No document")).color(t.text_faint).size(11.5));
+        crate::panels::no_document(ui, "copy");
         return;
     };
     let doc = st.doc.clone();
     let selected = target(app);
     let applied = doc.last_applied_comp;
-    let max_h = (ui.available_height() - 70.0).clamp(80.0, 320.0);
+    // The list fills the group above the footer, as in Photoshop: a short list leaves the footer
+    // on the body's bottom edge rather than floating under the last row.
+    let footer = 38.0;
+    let fill = ui.available_height() > footer + 60.0;
+    let rows_h = if fill { ui.available_height() - footer } else { f32::INFINITY };
     let mut action: Option<(&'static str, Value)> = None;
     let mut select: Option<u32> = None;
     let row_h = 26.0;
-    egui::ScrollArea::vertical().id_salt("comps-rows").max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-        // Last Document State.
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
-        if applied.is_none() {
-            ui.painter().rect_filled(rect, 0.0, t.row_selected);
-        } else if resp.hovered() {
-            ui.painter().rect_filled(rect, 0.0, t.hover.gamma_multiply(0.5));
-        }
-        let marker = Rect::from_center_size(pos2(rect.left() + 14.0, rect.center().y), vec2(12.0, 12.0));
-        ui.painter().rect_stroke(marker, 2.0, Stroke::new(1.0, t.text_faint), egui::StrokeKind::Inside);
-        if applied.is_none() {
-            crate::icons::paint(ui, marker, "check", 10.0, t.icon);
-        }
-        ui.painter().text(
-            pos2(rect.left() + 30.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            tl!("Last Document State"),
-            egui::FontId::proportional(12.0),
-            t.text_dim,
-        );
-        if resp.clicked() && doc.last_document_state.is_some() && applied.is_some() {
-            action = Some(("layerComp.restoreLastDocumentState", json!({})));
-        }
-        ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator));
-
-        if doc.layer_comps.is_empty() {
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(tl!("Capture the visibility, position and style of every layer with + below, then switch between versions."))
-                    .color(t.text_faint)
-                    .size(11.5),
-            );
-        }
-        for c in &doc.layer_comps {
+    let list = egui::ScrollArea::vertical()
+        .id_salt("comps-rows")
+        .max_height(rows_h)
+        .min_scrolled_height(if fill { rows_h } else { 0.0 })
+        .auto_shrink([false, !fill])
+        .show(ui, |ui| {
+            // Last Document State.
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
-            if selected == Some(c.id) {
-                ui.painter().rect_filled(rect, 0.0, t.row_selected);
+            let radius = if t.pro { 0.0 } else { t.radius_sm };
+            if applied.is_none() {
+                ui.painter().rect_filled(rect, radius, t.row_selected);
             } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 0.0, t.hover.gamma_multiply(0.5));
+                ui.painter().rect_filled(rect, radius, t.hover.gamma_multiply(0.5));
             }
-            // Apply marker (click to apply).
             let marker = Rect::from_center_size(pos2(rect.left() + 14.0, rect.center().y), vec2(12.0, 12.0));
             ui.painter().rect_stroke(marker, 2.0, Stroke::new(1.0, t.text_faint), egui::StrokeKind::Inside);
-            if applied == Some(c.id) {
-                crate::icons::paint(ui, marker, "check", 10.0, t.accent);
+            if applied.is_none() {
+                crate::icons::paint(ui, marker, "check", 10.0, t.icon);
             }
-            // The three apply toggles, right-aligned.
-            let toggles = [
-                ("eye", tl!("Visibility"), c.apply_visibility, "visibility"),
-                ("move", tl!("Position"), c.apply_position, "position"),
-                ("sparkles", tl!("Appearance (Layer Style)"), c.apply_appearance, "appearance"),
-            ];
-            let mut x = rect.right() - 14.0;
-            let mut toggle_hit = false;
-            for (icon, tip, on, key) in toggles.iter().rev() {
-                let r = Rect::from_center_size(pos2(x, rect.center().y), vec2(20.0, 20.0));
-                let hov = ui.rect_contains_pointer(r);
-                if hov {
-                    ui.painter().rect_filled(r, 3.0, t.hover);
-                }
-                crate::icons::paint(ui, r, icon, 13.0, if *on { t.icon } else { t.text_faint.gamma_multiply(0.45) });
-                if hov && resp.clicked() {
-                    toggle_hit = true;
-                    action = Some(("layerComp.setOptions", json!({"comp": c.id, *key: !on})));
-                }
-                if hov {
-                    let template = "Apply {option}: {state}";
-                    let state = if *on { "on" } else { "off" };
-                    resp.clone().on_hover_text(crate::i18n::fmt(tl!(template), &[("option", tip), ("state", tl!(state))]));
-                }
-                x -= 22.0;
+            ui.painter().text(
+                pos2(rect.left() + 30.0, rect.center().y),
+                Align2::LEFT_CENTER,
+                tl!("Last Document State"),
+                egui::FontId::proportional(12.0),
+                t.text_dim,
+            );
+            if resp.clicked() && doc.last_document_state.is_some() && applied.is_some() {
+                action = Some(("layerComp.restoreLastDocumentState", json!({})));
             }
-            let missing = c.missing_layers(&doc).len();
-            let mut name_x = rect.left() + 30.0;
-            if missing > 0 {
-                let r = Rect::from_center_size(pos2(name_x + 7.0, rect.center().y), vec2(14.0, 14.0));
-                crate::icons::paint(ui, r, "triangle-alert", 12.0, t.warning);
-                if ui.rect_contains_pointer(r) {
-                    resp.clone().on_hover_text(crate::i18n::trn(
-                        crate::i18n::current(),
-                        missing as u64,
-                        "{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.",
-                        "{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.",
-                    ));
-                    if resp.clicked() {
+            if t.pro {
+                ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator));
+            }
+
+            if doc.layer_comps.is_empty() {
+                ui.add_space(6.0);
+                crate::widgets::empty_state(
+                    ui,
+                    "copy",
+                    tl!("Layer Comps"),
+                    tl!("Capture the visibility, position and style of every layer with + below, then switch between versions."),
+                );
+            }
+            for c in &doc.layer_comps {
+                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+                if selected == Some(c.id) {
+                    ui.painter().rect_filled(rect, if t.pro { 0.0 } else { t.radius_sm }, t.row_selected);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(rect, if t.pro { 0.0 } else { t.radius_sm }, t.hover.gamma_multiply(0.5));
+                }
+                // Apply marker (click to apply).
+                let marker = Rect::from_center_size(pos2(rect.left() + 14.0, rect.center().y), vec2(12.0, 12.0));
+                ui.painter().rect_stroke(marker, 2.0, Stroke::new(1.0, t.text_faint), egui::StrokeKind::Inside);
+                if applied == Some(c.id) {
+                    crate::icons::paint(ui, marker, "check", 10.0, t.accent);
+                }
+                // The three apply toggles, right-aligned.
+                let toggles = [
+                    ("eye", tl!("Visibility"), c.apply_visibility, "visibility"),
+                    ("move", tl!("Position"), c.apply_position, "position"),
+                    ("sparkles", tl!("Appearance (Layer Style)"), c.apply_appearance, "appearance"),
+                ];
+                let mut x = rect.right() - 14.0;
+                let mut toggle_hit = false;
+                for (icon, tip, on, key) in toggles.iter().rev() {
+                    let r = Rect::from_center_size(pos2(x, rect.center().y), vec2(20.0, 20.0));
+                    let hov = ui.rect_contains_pointer(r);
+                    if hov {
+                        ui.painter().rect_filled(r, 3.0, t.hover);
+                    }
+                    crate::icons::paint(ui, r, icon, 13.0, if *on { t.icon } else { t.text_faint.gamma_multiply(0.45) });
+                    if hov && resp.clicked() {
                         toggle_hit = true;
-                        action = Some(clear_warning_action(c.id));
+                        action = Some(("layerComp.setOptions", json!({"comp": c.id, *key: !on})));
+                    }
+                    if hov {
+                        let template = "Apply {option}: {state}";
+                        let state = if *on { "on" } else { "off" };
+                        resp.clone().on_hover_text(crate::i18n::fmt(tl!(template), &[("option", tip), ("state", tl!(state))]));
+                    }
+                    x -= 22.0;
+                }
+                let missing = c.missing_layers(&doc).len();
+                let mut name_x = rect.left() + 30.0;
+                if missing > 0 {
+                    let r = Rect::from_center_size(pos2(name_x + 7.0, rect.center().y), vec2(14.0, 14.0));
+                    crate::icons::paint(ui, r, "triangle-alert", 12.0, t.warning);
+                    if ui.rect_contains_pointer(r) {
+                        resp.clone().on_hover_text(crate::i18n::trn(
+                            crate::i18n::current(),
+                            missing as u64,
+                            "{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.",
+                            "{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.",
+                        ));
+                        if resp.clicked() {
+                            toggle_hit = true;
+                            action = Some(clear_warning_action(c.id));
+                        }
+                    }
+                    name_x += 18.0;
+                }
+                let galley_w = (x - name_x).max(20.0);
+                let name = ui.painter().layout(c.name.clone(), egui::FontId::proportional(12.0), t.text, galley_w);
+                ui.painter().galley(pos2(name_x, rect.center().y - name.size().y / 2.0), name, t.text);
+                if !c.comment.is_empty() && resp.hovered() {
+                    resp.clone().on_hover_text(&c.comment);
+                }
+                if resp.clicked() && !toggle_hit {
+                    select = Some(c.id);
+                    if resp.interact_pointer_pos().is_some_and(|p| p.x < rect.left() + 24.0) {
+                        action = Some(("layerComp.apply", json!({"comp": c.id})));
                     }
                 }
-                name_x += 18.0;
-            }
-            let galley_w = (x - name_x).max(20.0);
-            let name = ui.painter().layout(c.name.clone(), egui::FontId::proportional(12.0), t.text, galley_w);
-            ui.painter().galley(pos2(name_x, rect.center().y - name.size().y / 2.0), name, t.text);
-            if !c.comment.is_empty() && resp.hovered() {
-                resp.clone().on_hover_text(&c.comment);
-            }
-            if resp.clicked() && !toggle_hit {
-                select = Some(c.id);
-                if resp.interact_pointer_pos().is_some_and(|p| p.x < rect.left() + 24.0) {
+                if resp.double_clicked() && !toggle_hit {
                     action = Some(("layerComp.apply", json!({"comp": c.id})));
                 }
+                if t.pro {
+                    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator.gamma_multiply(0.5)));
+                }
             }
-            if resp.double_clicked() && !toggle_hit {
-                action = Some(("layerComp.apply", json!({"comp": c.id})));
-            }
-            ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator.gamma_multiply(0.5)));
-        }
-    });
+        });
+    crate::widgets::scroll_fade_edges(ui, list.inner_rect, list.content_size, list.state.offset);
     // Footer: apply previous, apply next | update, new, delete (Photoshop's order).
-    ui.add_space(4.0);
     let has = !doc.layer_comps.is_empty();
-    ui.horizontal(|ui| {
+    let footer = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         if crate::icons::button(ui, "chevrons-left", 24.0, false, tl!("Apply previous selected layer comp")).clicked() && has {
             action = Some(("layerComp.previous", json!({})));
@@ -179,7 +194,13 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 action = Some(("layerComp.update", json!({"comp": id})));
             }
         });
-    });
+    };
+    if t.pro {
+        ui.add_space(4.0);
+        ui.horizontal(footer);
+    } else {
+        crate::widgets::action_row(ui, footer);
+    }
     if let Some(id) = select {
         app.ui.layer_comp_selected = Some(id);
     }

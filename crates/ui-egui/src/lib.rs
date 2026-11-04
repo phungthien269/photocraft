@@ -2822,6 +2822,9 @@ mod smart_filter_rows_tests;
 mod panel_visual_qa_tests;
 
 #[cfg(test)]
+mod dock_visual_qa_tests;
+
+#[cfg(test)]
 mod blur_pins_tests;
 
 #[cfg(test)]

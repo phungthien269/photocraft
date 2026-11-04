@@ -99,7 +99,9 @@ pub struct ListLayout {
 pub const PANEL_LIST: ListLayout = ListLayout { id: "brush-presets", max_height: 400.0, cell: 52.0, indent: 20.0, cards: false };
 
 fn responsive_list_layout(ui: &egui::Ui) -> ListLayout {
-    let height = ui.available_height().clamp(180.0, 640.0);
+    // Keep the footer's bar in the body: the old cap used every point above it, so a full list
+    // pushed the footer below the dock's bottom edge.
+    let height = (ui.available_height() - 38.0).clamp(120.0, 640.0);
     ListLayout { max_height: height, ..PANEL_LIST }
 }
 
@@ -884,7 +886,7 @@ pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&
     let grid = st.view == BrushesView::Grid;
     let show = (st.show_name, st.show_stroke, st.show_tip);
     let collapsed = &st.collapsed;
-    egui::ScrollArea::vertical().id_salt(layout.id).max_height(layout.max_height).auto_shrink([false, true]).show(ui, |ui| {
+    let list = egui::ScrollArea::vertical().id_salt(layout.id).max_height(layout.max_height).auto_shrink([false, true]).show(ui, |ui| {
         // A preset, group or folder dragged to the list's top or bottom edge (or past it) scrolls
         // the list, as the Layers panel's rows do, so it can be dropped on rows out of view (#5741).
         let dragging = egui::DragAndDrop::has_payload_of_type::<BrushDrag>(ui.ctx()) && ui.input(|i| i.pointer.primary_down());
@@ -912,9 +914,10 @@ pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&
             ui.add_space(2.0);
         }
         if presets.is_empty() {
-            ui.label(RichText::new(tl!("No brush presets")).color(Tokens::get(ui.ctx()).text_faint));
+            crate::widgets::empty_state(ui, "brush", tl!("No brush presets"), "");
         }
     });
+    widgets::scroll_fade_edges(ui, list.inner_rect, list.content_size, list.state.offset);
     // The dragged preset or group follows the pointer.
     if let Some(d) = egui::DragAndDrop::payload::<BrushDrag>(ui.ctx())
         && let Some(p) = ui.ctx().pointer_interact_pos()
@@ -969,9 +972,12 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // Size of the current brush (Photoshop's Brushes panel slider).
     let before = app.session.tools.brush.clone();
     let mut b = before.clone();
-    ui.horizontal(|ui| {
+    let size_row = |ui: &mut egui::Ui| {
         ui.label(RichText::new(tl!("Size")).color(t.text_dim));
-        let slider_w = (ui.available_width() - 90.0).clamp(100.0, 260.0);
+        // Leave room for the value field at the dock's 250-point minimum; the old 100-point
+        // slider floor plus the 74-point field pushed the row past the card's right edge.
+        let field_w = 66.0;
+        let slider_w = (ui.available_width() - field_w - 16.0).clamp(60.0, 260.0);
         let mut lv = b.size.max(1.0).ln();
         ui.add_sized(vec2(slider_w, 18.0), |ui: &mut egui::Ui| {
             let r = widgets::slider(ui, &mut lv, 0.0..=MAX_BRUSH_SIZE.ln(), None);
@@ -981,10 +987,18 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             r
         });
         let mut s = b.size;
-        if widgets::value_field(ui, &mut s, 1.0..=MAX_BRUSH_SIZE, "px", 74.0).changed() {
+        if widgets::value_field(ui, &mut s, 1.0..=MAX_BRUSH_SIZE, "px", field_w).changed() {
             b.size = s.round().clamp(1.0, MAX_BRUSH_SIZE);
         }
-    });
+    };
+    if t.pro {
+        ui.horizontal(size_row);
+    } else {
+        widgets::soft_card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(size_row);
+        });
+    }
     commit_gesture(app, ui.ctx(), &before, &b);
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -1007,10 +1021,15 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.add_space(6.0);
     let acts = preset_list(ui, &app.session.tools.presets, app.session.tools.current_preset.as_deref(), &mut app.ui.brushes_panel, responsive_list_layout(ui));
     apply(app, acts);
+    // A short list leaves the footer on the body's bottom edge, as in Photoshop.
+    let space = (ui.available_height() - 38.0).max(0.0);
+    ui.add_space(space);
     ui.add_space(4.0);
-    widgets::hairline(ui);
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    if t.pro {
+        widgets::hairline(ui);
+        ui.add_space(4.0);
+    }
+    let footer = |ui: &mut egui::Ui| {
         ui.label(
             RichText::new(crate::i18n::trn(crate::i18n::current(), app.session.tools.presets.len() as u64, "{n} preset", "{n} presets")).color(t.text_faint),
         );
@@ -1030,7 +1049,12 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let _ = crate::preset_files_ui::import_brushes(app);
             }
         });
-    });
+    };
+    if t.pro {
+        ui.horizontal(footer);
+    } else {
+        widgets::action_row(ui, footer);
+    }
     // Forget previews of presets that no longer exist.
     let names: std::collections::HashSet<&str> = app.session.tools.presets.iter().map(|p| p.name.as_str()).collect();
     brush_preview::with_cache(ui.ctx(), |c| {
