@@ -56,6 +56,22 @@ pub(crate) fn normalize(raw: &str) -> Option<&'static str> {
     PANELS.iter().find(|(id, label, _)| id.eq_ignore_ascii_case(raw.trim()) || label.eq_ignore_ascii_case(raw.trim())).map(|p| p.0)
 }
 
+/// The dock's panel registry (id, label, group): the one source Find Panel… lists from.
+pub(crate) fn registered() -> &'static [(&'static str, &'static str, Group)] {
+    PANELS
+}
+
+/// Is `panel` open in the dock? Custom layouts answer from their tree; the legacy dock answers
+/// from the visible tab groups, so a closed tab is not reported as open.
+pub(crate) fn is_open(app: &PhotocraftApp, panel: &str) -> bool {
+    if let Some(layout) = &app.ui.docking {
+        return layout.contains(&panel.to_owned());
+    }
+    let Some((_, _, group)) = PANELS.iter().find(|p| p.0 == panel) else { return false };
+    let pro = matches!(app.ui.theme, crate::theme::ThemeKind::Pro | crate::theme::ThemeKind::ProMedium);
+    group.shown(&app.ui.panels) && app.ui.dock.visible_tabs(*group, pro).iter().any(|(_, label)| normalize(label) == Some(panel))
+}
+
 pub(crate) fn valid(layout: &Layout<String>) -> bool {
     layout.validate().is_ok() && layout.panels().iter().all(|id| normalize(id) == Some(id.as_str()))
 }

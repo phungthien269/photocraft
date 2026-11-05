@@ -652,6 +652,7 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // and the toolbar tool flyout. A canvas drag in progress (a marquee being drawn) keeps it too.
     let esc_taken = app.drag.is_some()
         || app.ui.palette_open
+        || app.ui.find_panel_open
         || app.ui.canvas_tool_menu.is_some()
         || app.ui.layer_menu.is_some()
         || app.ui.brush_picker.is_some()

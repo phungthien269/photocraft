@@ -678,6 +678,9 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         && icons::button(ui, "search", 28.0, app.ui.palette_open, &crate::shortcuts::tip_label(app, "Search commands", "edit.search")).clicked()
                     {
                         app.ui.palette_open = !app.ui.palette_open;
+                        if app.ui.palette_open {
+                            app.ui.find_panel_open = false;
+                        }
                     }
                     let (theme_icon, appearance_label) = match app.session.prefs().interface.appearance_mode {
                         photocraft_engine::prefs::AppearanceMode::Auto => ("monitor", tl!("Auto")),

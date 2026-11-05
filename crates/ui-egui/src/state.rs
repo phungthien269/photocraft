@@ -1285,6 +1285,12 @@ pub struct UiState {
     pub theme: crate::theme::ThemeKind,
     pub workspace: String,
     pub palette_open: bool,
+    /// Window › Find Panel…: the quick panel switcher (a floating palette).
+    #[serde(default)]
+    pub find_panel_open: bool,
+    /// Panel keys used from Find Panel…, most-recent first (`dock:<id>` / `<window.toggle id>`).
+    #[serde(default)]
+    pub recent_panels: Vec<String>,
     pub dock_tabs: DockTabs,
     /// Right-dock group order, heights and collapsed groups (see `dock`).
     #[serde(default)]
@@ -1441,6 +1447,8 @@ impl Default for UiState {
             theme: crate::theme::ThemeKind::ProMedium,
             workspace: "Essentials".into(),
             palette_open: false,
+            find_panel_open: false,
+            recent_panels: Vec::new(),
             dock_tabs: DockTabs::default(),
             dock: Default::default(),
             docking: None,

@@ -99,6 +99,7 @@ pub mod filter_dialog;
 mod filter_preview_ui;
 #[cfg(not(target_arch = "wasm32"))]
 mod filter_preview_worker;
+pub mod find_panel;
 pub mod flick_pan;
 mod font_preview;
 pub mod frame_tool;
@@ -2095,6 +2096,7 @@ impl eframe::App for PhotocraftApp {
         timeline_ui::windows(self, &ctx);
         workspace_ui::windows(self, &ctx);
         palette::show(self, &ctx);
+        find_panel::show(self, &ctx);
         dialogs::show(self, &ctx);
         rasterize_prompt::run_pending(self, &ctx);
         jobs_ui::dialog(self, &ctx);

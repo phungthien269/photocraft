@@ -80,8 +80,8 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
         return Ok(Value::Null);
     }
     let r = invoke_unguarded(app, ctx, id, params)?;
-    // The palette's empty-query list (UI-217-7); opening the palette isn't a command to recall.
-    if id != "edit.search" {
+    // The palette's empty-query list (UI-217-7); opening a search surface isn't a command to recall.
+    if id != "edit.search" && id != "window.findPanel" {
         crate::palette::note_recent(ctx, id);
     }
     Ok(r)
@@ -358,6 +358,13 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         }
         "edit.search" => {
             app.ui.palette_open = !app.ui.palette_open;
+            if app.ui.palette_open {
+                app.ui.find_panel_open = false;
+            }
+            Ok(Value::Null)
+        }
+        "window.findPanel" => {
+            crate::find_panel::open(app, ctx);
             Ok(Value::Null)
         }
         "help.about" => Ok(json!({"dialog": app.ui.open_dialog(DialogKind::About, Default::default())})),
@@ -724,7 +731,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     match id {
         "window.panel.activate" | "window.panel.layout" => true,
         "window.panel.group" | "window.panel.move" | "window.panel.float" | "window.panel.dock" | "window.panel.close" => !app.session.prefs().workspace_locked,
-        "file.open" | "file.exit" | "file.clearRecent" | "file.removeRecent" | "help.about" | "help.systemInfo" | "edit.search" => true,
+        "file.open" | "file.exit" | "file.clearRecent" | "file.removeRecent" | "help.about" | "help.systemInfo" | "edit.search" | "window.findPanel" => true,
         i if i.starts_with("file.openRecent.") => true,
         i if i.starts_with(DOCUMENT_ITEM) => true,
         i if crate::links::url_for(i).is_some() => true,
@@ -791,8 +798,8 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
 /// Image › Mode items that carry a checkmark.
 const MODE_CHECKS: [&str; 11] = ["rgb", "grayscale", "cmyk", "lab", "multichannel", "indexedColor", "bitmap", "duotone", "bits8", "bits16", "bits32"];
 
-/// Is a UI-level panel toggle currently on (for checkmarks)?
-fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
+/// Is a UI-level panel toggle currently on (for checkmarks, and Find Panel…'s Open badges)?
+pub(crate) fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     if let Some(checked) = crate::panel_docking::checked(app, id) {
         return Some(checked);
     }

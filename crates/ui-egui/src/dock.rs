@@ -58,6 +58,19 @@ impl Group {
         }
     }
 
+    /// The group's title, as its tabs and the Find Panel… palette show it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::Color => "Color",
+            Group::Properties => "Properties",
+            Group::Character => "Character",
+            Group::Navigator => "Navigator",
+            Group::History => "History",
+            Group::Layers => "Layers",
+            Group::Brushes => "Brushes",
+        }
+    }
+
     /// Height (points, tab strip included) a group gets until the user resizes it, when the
     /// column has room (see [`DockLayout::heights_for`]).
     pub fn default_height(self) -> f32 {

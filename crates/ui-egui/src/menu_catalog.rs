@@ -705,6 +705,8 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["View"], "---", None, "---"),
     (&["View"], "Pattern Preview", None, "view.patternPreview"),
     (&["View"], "Pixel Art Preview", None, "view.pixelArtPreview"),
+    (&["Window"], "Find Panel…", Some("Cmd+Shift+P"), "window.findPanel"),
+    (&["Window"], "---", None, "---"),
     (&["Window", "Arrange"], "Tile All Vertically", None, "window.arrange.tileAllVertically"),
     (&["Window", "Arrange"], "Tile All Horizontally", None, "window.arrange.tileAllHorizontally"),
     (&["Window", "Arrange"], "2-up Vertical", None, "window.arrange.twoUpVertical"),

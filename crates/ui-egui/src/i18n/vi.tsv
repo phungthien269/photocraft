@@ -430,6 +430,7 @@
 	Extra Large	Rất lớn
 	Feather…	Làm mềm cạnh…
 	Find Layers	Tìm lớp
+	Find Panel…	Tìm bảng…
 	Focus Area…	Vùng nét…
 	Font Preview Size	Cỡ xem trước phông
 	Fractions	Phân số
@@ -1956,7 +1957,9 @@ colorRange	Invert	Đảo ngược
 @plural	{n} sample|{n} samples	{n} mẫu
 	Search commands	Tìm kiếm lệnh
 	Search commands, tools and panels…	Tìm kiếm lệnh, công cụ và bảng…
+	Search panels…	Tìm kiếm bảng…
 	No matching commands	Không tìm thấy lệnh
+	No matching panels	Không tìm thấy bảng
 	↑↓ navigate   {key} run   esc close	↑↓ điều hướng   {key} chạy   esc đóng
 	Tool	Công cụ
 
